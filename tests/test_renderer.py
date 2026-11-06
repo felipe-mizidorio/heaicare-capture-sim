@@ -8,7 +8,7 @@ import pytest
 from heaicare_capture_sim import renderer as renderer_mod
 from heaicare_capture_sim.head import Head, make_synthetic_head
 from heaicare_capture_sim.renderer import RenderWorker
-from heaicare_capture_sim.rig import Camera
+from heaicare_capture_sim.rig import MAX_HEIGHT, MAX_WIDTH, Camera
 
 COLORS = [
     (1, 0, 0),
@@ -94,11 +94,28 @@ def test_empty_scene_renders_background(renderer):
     assert (img == renderer.background_rgb).all()
 
 
-def test_camera_larger_than_renderer_is_rejected(renderer):  # Review Focus 1
+def test_rendering_is_deterministic(renderer):
+    cam = Camera(name="c", width=640, height=480, eye_mm=(0.0, -300.0, 100.0))
+    images = []
+    for _ in range(2):
+        renderer.set_scene([make_synthetic_head()])
+        images.append(renderer.render(cam))
+    assert images[0].tobytes() == images[1].tobytes()
+
+
+def test_camera_larger_than_renderer_is_rejected(renderer):
+    big = Camera.model_construct(  # validation caps cameras at the renderer size
+        name="big",
+        width=MAX_WIDTH + 1,
+        height=MAX_HEIGHT,
+        eye_mm=(0.0, -300.0, 0.0),
+        target_mm=(0.0, 0.0, 0.0),
+        up=(0.0, 0.0, 1.0),
+        focal_length_mm=8.0,
+        pixel_size_um=3.45,
+    )
     with pytest.raises(ValueError, match="larger than the renderer"):
-        renderer.render(
-            Camera(name="big", width=1920, height=1080, eye_mm=(0.0, -300.0, 0.0))
-        )
+        renderer.render(big)
 
 
 def test_render_worker_uses_one_dedicated_thread():

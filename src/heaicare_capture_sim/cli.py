@@ -19,9 +19,9 @@ def _cmd_capture(args: argparse.Namespace) -> int:
     head = load_mesh(args.mesh) if args.mesh else make_synthetic_head()
     from heaicare_capture_sim.renderer import Renderer
 
-    renderer = Renderer(
-        max(c.width for c in rig.cameras), max(c.height for c in rig.cameras)
-    )
+    renderer = (
+        Renderer()
+    )  # same fixed viewport as the GUI, so both give identical pixels
     print(capture(rig, head, args.out, renderer))
     return 0
 
