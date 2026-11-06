@@ -73,9 +73,11 @@ def capture(rig: Rig, head: Head, out_dir: Path, renderer) -> Path:
             if not (image != renderer.background_rgb).any():
                 _log.warning("camera %s sees no geometry", cam.name)
             rel = f"images/{cam.name}.png"
-            o3d.io.write_image(
+            image_ok = o3d.io.write_image(
                 str(tmp / rel), o3d.geometry.Image(np.ascontiguousarray(image))
             )
+            if not image_ok:
+                raise OSError(f"could not write image: {out_dir / rel}")
             cameras.append(
                 {
                     "name": cam.name,
@@ -88,7 +90,7 @@ def capture(rig: Rig, head: Head, out_dir: Path, renderer) -> Path:
                 }
             )
         meta = {
-            "created": datetime.now(UTC).isoformat(timespec="seconds"),
+            "created": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "version": version("heaicare-capture-sim"),
             "mesh_source": head.source,
             "cameras": cameras,

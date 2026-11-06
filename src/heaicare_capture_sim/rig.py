@@ -32,7 +32,7 @@ class Camera(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True, allow_inf_nan=False)
 
-    name: str = Field(min_length=1)
+    name: str = Field(min_length=1, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
     width: int = Field(default=1920, gt=0, le=MAX_WIDTH)
     height: int = Field(default=1080, gt=0, le=MAX_HEIGHT)
     focal_length_mm: float = Field(default=8.0, gt=0)

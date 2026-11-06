@@ -37,6 +37,7 @@ def test_output_layout_and_cameras_json(tmp_path):
     assert len(o3d.io.read_triangle_mesh(str(out / "ground_truth.ply")).triangles) > 0
     meta = json.loads((out / "cameras.json").read_text())
     assert meta["mesh_source"] == "synthetic" and meta["version"]
+    assert meta["created"].endswith("Z")
     for entry, cam in zip(meta["cameras"], SMALL.cameras, strict=True):
         assert entry["image"] == f"images/{cam.name}.png"
         np.testing.assert_allclose(entry["K"], cam.K)
@@ -59,6 +60,15 @@ def test_failure_leaves_no_partial_folder(tmp_path):
             tmp_path / "run",
             FakeRenderer(fail_on="cam01"),
         )
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_image_write_failure_raises_and_cleans_up(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "heaicare_capture_sim.capture.o3d.io.write_image", lambda *a, **k: False
+    )
+    with pytest.raises(OSError, match="could not write image"):
+        capture(SMALL, make_synthetic_head(), tmp_path / "run", FakeRenderer())
     assert list(tmp_path.iterdir()) == []
 
 
