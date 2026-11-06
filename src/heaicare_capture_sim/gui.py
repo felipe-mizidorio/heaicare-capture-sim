@@ -94,6 +94,16 @@ class _Gui:
         self._lock = (
             threading.RLock()
         )  # reentrant: server-side .value sets re-enter handlers
+        # The scene is in millimetres (head ~100 mm, cameras ~300 mm away), so the
+        # client defaults (a few units from the origin, far plane 1000) show nothing.
+        server.scene.set_up_direction("+z")
+        cam = server.initial_camera
+        cam.position, cam.look_at, cam.up = (
+            (600.0, -600.0, 450.0),
+            (0.0, 0.0, 0.0),
+            (0.0, 0.0, 1.0),
+        )
+        cam.near, cam.far = 1.0, 10000.0
         server.scene.add_mesh_simple(
             "/head",
             vertices=np.asarray(head.mesh.vertices, dtype=np.float32),
