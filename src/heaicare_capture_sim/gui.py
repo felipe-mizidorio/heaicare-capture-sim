@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import functools
 import logging
 import math
+import threading
+from collections.abc import Callable
 from concurrent.futures import Future
 from pathlib import Path
 
@@ -47,21 +50,38 @@ def run(rig_path: Path | None, mesh_path: Path | None, port: int) -> None:
     head = load_mesh(mesh_path) if mesh_path else make_synthetic_head()
     rig = load_rig(rig_path) if rig_path else ring(8, 300.0, 100.0)
     worker = RenderWorker(lambda: Renderer(MAX_WIDTH, MAX_HEIGHT))
-    server = viser.ViserServer(port=port)
+    server = None
     try:
+        server = viser.ViserServer(port=port)
+        if server.get_port() != port:  # viser silently moves to the next free port
+            raise OSError(f"port {port} is already in use")
         _Gui(server, worker, head, rig)
         print(f"GUI at http://localhost:{port}")
         server.sleep_forever()
+    except KeyboardInterrupt:
+        pass
     finally:
-        # Explicit shutdown: the spike showed the process does not exit cleanly on
-        # Ctrl+C otherwise, and the renderer must be released on its own thread.
-        server.stop()
+        # Explicit shutdown: the renderer must be released on its own thread, so the
+        # worker is closed even when the server failed to start.
+        if server is not None:
+            server.stop()
         worker.close()
 
 
 def _notify(event, title: str, body: str) -> None:
     if event is not None and event.client is not None:
         event.client.add_notification(title=title, body=body)
+
+
+def _locked(method: Callable) -> Callable:
+    """Run a handler under the GUI lock (viser runs client callbacks on a thread pool)."""
+
+    @functools.wraps(method)
+    def wrapper(self: _Gui, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+
+    return wrapper
 
 
 class _Gui:
@@ -71,6 +91,9 @@ class _Gui:
         self.server, self.worker, self.head, self.rig = server, worker, head, rig
         self.selected, self.syncing, self.preview_gen = 0, False, 0
         self.frustums: list = []
+        self._lock = (
+            threading.RLock()
+        )  # reentrant: server-side .value sets re-enter handlers
         server.scene.add_mesh_simple(
             "/head",
             vertices=np.asarray(head.mesh.vertices, dtype=np.float32),
@@ -185,7 +208,10 @@ class _Gui:
             return
         if image is not None:
             step = max(1, math.ceil(image.shape[1] / PREVIEW_MAX_WIDTH))
-            self.preview.image = image[::step, ::step]
+            try:
+                self.preview.image = image[::step, ::step]
+            except Exception:  # noqa: BLE001 - the server may already be stopped
+                _log.debug("preview update dropped", exc_info=True)
 
     # widget events -> state
     def _set_rig(self, cameras: list[Camera], selected: int, event=None) -> None:
@@ -196,14 +222,17 @@ class _Gui:
         self.selected = min(selected, len(self.rig.cameras) - 1)
         self._refresh()
 
+    @_locked
     def _select(self, index: int) -> None:
         self.selected = index
         self._refresh()
 
+    @_locked
     def _on_select(self, _event) -> None:
         if not self.syncing:
             self._select(self._names().index(self.dropdown.value))
 
+    @_locked
     def _on_edit(self, event) -> None:
         if self.syncing:
             return
@@ -227,15 +256,18 @@ class _Gui:
             if f"{base}_{i}" not in names
         )
 
+    @_locked
     def _add(self, event) -> None:
         cam = Camera(name=self._unique_name("cam"), eye_mm=(300.0, 0.0, 100.0))
         self._set_rig([*self.rig.cameras, cam], len(self.rig.cameras), event)
 
+    @_locked
     def _duplicate(self, event) -> None:
         src = self.rig.cameras[self.selected]
         cam = src.model_copy(update={"name": self._unique_name(src.name)})
         self._set_rig([*self.rig.cameras, cam], len(self.rig.cameras), event)
 
+    @_locked
     def _remove(self, event) -> None:
         if len(self.rig.cameras) == 1:
             _notify(event, "Cannot remove", "A rig needs at least one camera.")
@@ -243,22 +275,46 @@ class _Gui:
         cameras = [c for i, c in enumerate(self.rig.cameras) if i != self.selected]
         self._set_rig(cameras, max(0, self.selected - 1), event)
 
+    def _preset_fields(self) -> dict:
+        """Camera settings that generated presets inherit from the selected camera."""
+        cam = self.rig.cameras[self.selected]
+        return {
+            "target_mm": cam.target_mm,
+            "width": cam.width,
+            "height": cam.height,
+            "focal_length_mm": cam.focal_length_mm,
+            "pixel_size_um": cam.pixel_size_um,
+        }
+
+    @_locked
     def _apply_ring(self, event) -> None:
         try:
-            rig = ring(int(self.ring_n.value), self.ring_r.value, self.ring_h.value)
+            rig = ring(
+                int(self.ring_n.value),
+                self.ring_r.value,
+                self.ring_h.value,
+                **self._preset_fields(),
+            )
         except ValueError as exc:
             _notify(event, "Invalid ring", str(exc))
             return
         self._set_rig(rig.cameras, 0, event)
 
+    @_locked
     def _apply_dome(self, event) -> None:
         try:
-            rig = dome(int(self.dome_n.value), self.dome_r.value, self.dome_e.value)
+            rig = dome(
+                int(self.dome_n.value),
+                self.dome_r.value,
+                self.dome_e.value,
+                **self._preset_fields(),
+            )
         except ValueError as exc:
             _notify(event, "Invalid dome", str(exc))
             return
         self._set_rig(rig.cameras, 0, event)
 
+    @_locked
     def _load(self, event) -> None:
         try:
             rig = load_rig(Path(self.rig_path.value))
@@ -267,6 +323,7 @@ class _Gui:
             return
         self._set_rig(rig.cameras, 0, event)
 
+    @_locked
     def _save(self, event) -> None:
         try:
             save_rig(self.rig, Path(self.rig_path.value))
@@ -275,17 +332,26 @@ class _Gui:
             return
         _notify(event, "Saved", self.rig_path.value)
 
+    @_locked
     def _capture(self, event) -> None:
-        self.capture_button.disabled = True
         rig, head = self.rig, self.head
+        try:
+            out = new_capture_dir(CAPTURE_ROOT)
+        except OSError as exc:
+            _log.exception("capture dir failed")
+            _notify(event, "Capture failed", str(exc))
+            return
+        self.capture_button.disabled = True
 
         def done(future: Future) -> None:
-            self.capture_button.disabled = False
+            try:
+                self.capture_button.disabled = False
+            except Exception:  # noqa: BLE001 - the server may already be stopped
+                _log.debug("capture button re-enable dropped", exc_info=True)
             try:
                 _notify(event, "Captured", str(future.result()))
             except Exception as exc:  # noqa: BLE001 - surfaced to the user and logged
                 _log.exception("capture failed")
                 _notify(event, "Capture failed", str(exc))
 
-        out = new_capture_dir(CAPTURE_ROOT)
         self.worker.submit(lambda r: capture(rig, head, out, r)).add_done_callback(done)

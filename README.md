@@ -53,7 +53,7 @@ Both presets accept the camera options `--width`, `--height`, `--focal-length-mm
 
 - **3D view:** the head plus one frustum per camera. The selected camera is highlighted; clicking a frustum selects it.
 - **Camera panel:** a camera dropdown, then fields for the selected camera (eye, target, up, focal length, pixel size, resolution), with Add, Duplicate and Remove.
-- **Presets:** ring and dome, with the same parameters as the CLI. Applying a preset replaces the camera list.
+- **Presets:** ring and dome with the same layout parameters as the CLI; the generated cameras reuse the selected camera's resolution, lens and target. Applying a preset replaces the camera list.
 - **Preview:** an Open3D render of the selected camera (scaled down), refreshed after edits. It uses the same renderer as capture.
 - **Buttons:** Load rig, Save rig, and Capture. Capture writes `captures/<timestamp>/` and shows the path.
 
