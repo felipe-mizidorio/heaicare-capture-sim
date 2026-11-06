@@ -45,6 +45,9 @@ def test_camera_looking_along_y_has_world_x_to_the_right():
         {"pixel_size_um": 0.0},
         {"width": 5000},
         {"unknown_field": 1},
+        {"eye_mm": (float("nan"), 0.0, 0.0)},
+        {"eye_mm": (float("inf"), 0.0, 0.0)},
+        {"focal_length_mm": float("inf")},
     ],
 )
 def test_invalid_camera_rejected(kw):

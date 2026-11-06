@@ -30,7 +30,7 @@ class Camera(BaseModel):
     point at the image centre, OpenCV axes (x right, y down, z forward).
     """
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, allow_inf_nan=False)
 
     name: str = Field(min_length=1)
     width: int = Field(default=1920, gt=0, le=MAX_WIDTH)
