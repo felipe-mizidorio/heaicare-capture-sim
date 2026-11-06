@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 from collections.abc import Callable, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 
@@ -96,6 +97,10 @@ class RenderWorker[R]:
         def release() -> None:
             # Open3D aborts if a renderer is destroyed off the thread that created it.
             self._renderer = None
+            # A failed job's traceback holds the renderer; if a done-callback called
+            # future.result() that is a reference cycle only the GC frees, possibly on
+            # another thread. Collect it here, on the render thread.
+            gc.collect()
 
         self._pool.submit(release).result()
         self._pool.shutdown(wait=True)

@@ -1,3 +1,4 @@
+import gc
 import threading
 
 import numpy as np
@@ -122,3 +123,34 @@ def test_render_worker_releases_renderer_on_its_thread():
     worker_thread = worker.submit(lambda _r: threading.get_ident()).result()
     worker.close()
     assert released_on == [worker_thread]
+
+
+def test_failed_job_does_not_keep_renderer_alive_past_close():
+    released_on = []
+
+    class Probe:
+        def __del__(self):
+            released_on.append(threading.get_ident())
+
+    def boom(_r):
+        raise RuntimeError("boom")
+
+    def read_result(future):
+        try:
+            future.result()
+        except RuntimeError:
+            pass
+
+    gc.disable()
+    try:
+        worker = RenderWorker(Probe)
+        worker_thread = worker.submit(lambda _r: threading.get_ident()).result()
+        failed = worker.submit(boom)
+        failed.add_done_callback(read_result)  # builds the exception/traceback cycle
+        with pytest.raises(RuntimeError):
+            failed.result()
+        del failed
+        worker.close()
+        assert released_on == [worker_thread]
+    finally:
+        gc.enable()
