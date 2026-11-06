@@ -222,3 +222,6 @@ __marimo__/
 # Claude Code files (never committed)
 CLAUDE.md
 .claude/
+
+# Capture output
+captures/

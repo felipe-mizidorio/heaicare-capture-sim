@@ -8,6 +8,7 @@ dependencies = [
     "numpy>=2.5.4",
     "open3d>=0.20.0",
     "pydantic>=2.14.3",
+    "viser>=1.1.1",
 ]
 
 [project.scripts]

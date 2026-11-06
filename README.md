@@ -2,7 +2,7 @@
 
 Virtual capture rig for the heAICare project. It renders synthetic images of a neonatal head from a configurable set of fixed cameras, all triggered at once, so that camera count and placement can be studied for 3D reconstruction of the cranial vault. The images go to heAICare's reconstruction pipeline (outside this repo), and the result is compared against the ground-truth mesh saved with every capture.
 
-> **Status:** design agreed, implementation not started. This README describes the target behaviour.
+> **Status:** v0.1 implemented.
 
 ## Scope
 
