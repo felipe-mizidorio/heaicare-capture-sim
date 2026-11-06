@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import logging
 import math
@@ -362,6 +363,8 @@ class _Gui:
                 _notify(event, "Captured", str(future.result()))
             except Exception as exc:  # noqa: BLE001 - surfaced to the user and logged
                 _log.exception("capture failed")
+                with contextlib.suppress(OSError):
+                    out.rmdir()  # no partial folder; no-op if it holds anything
                 _notify(event, "Capture failed", str(exc))
 
         self.worker.submit(lambda r: capture(rig, head, out, r)).add_done_callback(done)
