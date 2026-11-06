@@ -72,7 +72,7 @@ def test_image_write_failure_raises_and_cleans_up(tmp_path, monkeypatch):
     assert list(tmp_path.iterdir()) == []
 
 
-def test_missing_parents_created(tmp_path):  # Review Focus 2
+def test_missing_parents_created(tmp_path):
     out = capture(
         SMALL, make_synthetic_head(), tmp_path / "a" / "b" / "run", FakeRenderer()
     )
@@ -90,7 +90,7 @@ def test_camera_seeing_nothing_warns(tmp_path, caplog):
     assert "cam00" in caplog.text and "sees no geometry" in caplog.text
 
 
-def test_new_capture_dirs_are_unique(tmp_path):  # Review Focus 4
+def test_new_capture_dirs_are_unique(tmp_path):
     a, b = new_capture_dir(tmp_path), new_capture_dir(tmp_path)
     assert a != b and a.is_dir() and b.is_dir()
 

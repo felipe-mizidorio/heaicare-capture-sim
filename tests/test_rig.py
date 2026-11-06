@@ -84,7 +84,7 @@ def test_dome_geometry():
         assert c.eye_mm[2] >= 300.0 * math.sin(math.radians(20.0)) - 1e-9
 
 
-def test_dome_near_zenith_is_valid():  # Review Focus 5
+def test_dome_near_zenith_is_valid():
     assert len(dome(1, 300.0, 89.9).cameras) == 1
 
 

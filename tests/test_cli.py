@@ -49,7 +49,7 @@ def test_preset_ring_and_dome(tmp_path):
     assert len(load_rig(tmp_path / "d.json").cameras) == 12
 
 
-def test_bad_rig_files_exit_2(tmp_path, capsys):  # Review Focus 3
+def test_bad_rig_files_exit_2(tmp_path, capsys):
     (tmp_path / "bad.json").write_text("{not json")
     for rig in (tmp_path / "bad.json", tmp_path / "missing.json"):
         assert main(["capture", "--rig", str(rig), "--out", str(tmp_path / "o")]) == 2
