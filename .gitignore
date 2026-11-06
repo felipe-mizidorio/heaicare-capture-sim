@@ -227,3 +227,6 @@ spikes/*/out/
 # Claude Code files (never committed)
 CLAUDE.md
 .claude/
+
+# Local planning docs (never committed)
+docs/
