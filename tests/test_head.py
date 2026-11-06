@@ -41,3 +41,8 @@ def test_load_mesh_errors(tmp_path):
     (tmp_path / "empty.ply").write_text("not a mesh")
     with pytest.raises(ValueError, match="no triangles"):
         load_mesh(tmp_path / "empty.ply")
+
+
+def test_write_ground_truth_errors(tmp_path):
+    with pytest.raises(OSError, match="could not write ground truth"):
+        write_ground_truth(make_synthetic_head(), tmp_path / "missing_dir" / "gt.ply")

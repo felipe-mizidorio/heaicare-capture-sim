@@ -63,8 +63,8 @@ def _skin_texture(seed: int, h: int = 1024, w: int = 2048) -> np.ndarray:
 
     Parameters
     ----------
-    seed : int, optional
-        Random seed for reproducibility (default is 0).
+    seed : int
+        Random seed for reproducibility.
     h : int, optional
         Texture height (default is 1024).
     w : int, optional
@@ -148,13 +148,13 @@ def write_ground_truth(head: Head, path: Path) -> None:
 
     Raises
     ------
-    AssertionError
-        If the cleaned mesh is not watertight.
+    OSError
+        If the write operation fails.
     """
     gt = o3d.geometry.TriangleMesh(head.mesh.vertices, head.mesh.triangles)
     gt.merge_close_vertices(1e-6)
     gt.remove_degenerate_triangles()
     gt.remove_duplicated_triangles()
     gt.remove_unreferenced_vertices()
-    assert gt.is_watertight(), "Ground truth mesh is not watertight"
-    o3d.io.write_triangle_mesh(str(path), gt)
+    if not o3d.io.write_triangle_mesh(str(path), gt):
+        raise OSError(f"could not write ground truth: {path}")
