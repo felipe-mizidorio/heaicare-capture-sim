@@ -218,3 +218,12 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Project: third-party/generated meshes, capture outputs, spike outputs
+data/
+captures/
+spikes/*/out/
+
+# Claude Code files (never committed)
+CLAUDE.md
+.claude/
