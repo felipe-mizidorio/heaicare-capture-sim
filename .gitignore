@@ -218,3 +218,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Claude Code files (never committed)
+CLAUDE.md
+.claude/
+
+# Capture output
+captures/

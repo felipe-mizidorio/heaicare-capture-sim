@@ -1,0 +1,25 @@
+[project]
+name = "heaicare-capture-sim"
+version = "0.1.0"
+description = "Virtual multi-camera capture rig for neonatal head reconstruction studies"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "numpy>=2.5.4",
+    "open3d>=0.20.0",
+    "pydantic>=2.14.3",
+    "viser>=1.1.1",
+]
+
+[project.scripts]
+heaicare-capture-sim = "heaicare_capture_sim.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.11.7,<0.12.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+    "ruff>=0.17.4",
+]
