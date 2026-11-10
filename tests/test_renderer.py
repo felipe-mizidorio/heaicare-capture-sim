@@ -6,7 +6,7 @@ import open3d as o3d
 import pytest
 
 from heaicare_capture_sim import renderer as renderer_mod
-from heaicare_capture_sim.head import Head, make_synthetic_head
+from heaicare_capture_sim.head import Head, load_mesh, make_synthetic_head
 from heaicare_capture_sim.renderer import RenderWorker
 from heaicare_capture_sim.rig import MAX_HEIGHT, MAX_WIDTH, Camera
 
@@ -84,6 +84,50 @@ def test_textured_head_is_visible(renderer):
     assert img.shape == (480, 640, 3) and img.dtype == np.uint8
     assert (img != renderer.background_rgb).any(axis=2).mean() > 0.1
     assert img.std() > 5
+
+
+def test_obj_texture_renders_upright_and_unmirrored(renderer, tmp_path):
+    # Standard OBJ: vt v = 1 is the image's top row. Texture: top red, bottom
+    # blue, left half (u < 0.5) green. Quad faces +y with z up.
+    img = np.zeros((64, 64, 3), np.uint8)
+    img[:32, :, 0], img[32:, :, 2], img[:, :32, 1] = 255, 255, 255
+    o3d.io.write_image(str(tmp_path / "t.png"), o3d.geometry.Image(img))
+    (tmp_path / "q.mtl").write_text("newmtl skin\nmap_Kd t.png\n")
+    (tmp_path / "q.obj").write_text(
+        "mtllib q.mtl\nv -50 0 -50\nv 50 0 -50\nv 50 0 50\nv -50 0 50\n"
+        "vt 0 0\nvt 1 0\nvt 1 1\nvt 0 1\nusemtl skin\nf 1/1 2/2 3/3\nf 1/1 3/3 4/4\n"
+    )
+    renderer.set_scene([load_mesh(tmp_path / "q.obj")])
+    im = renderer.render(
+        Camera(name="c", width=640, height=480, eye_mm=(0.0, 400.0, 0.0))
+    ).astype(int)
+    top, bottom = im[180, 280], im[300, 280]
+    assert top[0] > 100 and top[2] == 0 and bottom[2] > 100 and bottom[0] == 0
+    # Seen from +y, world -x (u = 0, green) is on the image's right.
+    assert im[240, 390, 1] > 100 and im[240, 250, 1] == 0
+
+
+def test_rgba_texture_is_see_through(renderer):
+    # Card facing +y; u < 0.5 fully transparent, u >= 0.5 opaque red.
+    quad = o3d.geometry.TriangleMesh(
+        o3d.utility.Vector3dVector(
+            [[-50, 0, -50], [50, 0, -50], [50, 0, 50], [-50, 0, 50]]
+        ),
+        o3d.utility.Vector3iVector([[0, 1, 2], [0, 2, 3]]),
+    )
+    quad.triangle_uvs = o3d.utility.Vector2dVector(
+        [[0, 0], [1, 0], [1, 1], [0, 0], [1, 1], [0, 1]]
+    )
+    texture = np.zeros((64, 64, 4), np.uint8)
+    texture[..., 0], texture[:, 32:, 3] = 255, 255
+    renderer.set_scene([Head(quad, texture, "card")])
+    im = renderer.render(
+        Camera(name="c", width=640, height=480, eye_mm=(0.0, 400.0, 0.0))
+    ).astype(int)
+    # Seen from +y, u = 0 (transparent) is on the image's right.
+    see_through, opaque = im[240, 390], im[240, 250]
+    assert np.abs(see_through - renderer.background_rgb).max() <= 3
+    assert opaque[0] > opaque[1] + 20  # red card visible
 
 
 def test_empty_scene_renders_background(renderer):

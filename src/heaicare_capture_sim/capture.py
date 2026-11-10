@@ -48,7 +48,7 @@ def capture(rig: Rig, head: Head, out_dir: Path, renderer) -> Path:
     rig : Rig
         Cameras to trigger together.
     head : Head
-        Scene geometry.
+        Scene geometry; its extras are rendered, only ``head.mesh`` is ground truth.
     out_dir : Path
         Missing or empty folder; parents are created.
     renderer
@@ -66,7 +66,7 @@ def capture(rig: Rig, head: Head, out_dir: Path, renderer) -> Path:
     tmp = Path(tempfile.mkdtemp(prefix=f".{out_dir.name}.", dir=out_dir.parent))
     try:
         (tmp / "images").mkdir()
-        renderer.set_scene([head])
+        renderer.set_scene([head, *head.extras])
         cameras = []
         for cam in rig.cameras:
             image = renderer.render(cam)

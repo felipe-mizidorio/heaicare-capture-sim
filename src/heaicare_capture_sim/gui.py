@@ -12,12 +12,20 @@ from concurrent.futures import Future
 from pathlib import Path
 
 import numpy as np
+import trimesh
 import viser
 import viser.transforms as vtf
+from PIL import Image
 from pydantic import ValidationError
 
 from heaicare_capture_sim.capture import capture, new_capture_dir
-from heaicare_capture_sim.head import Head, load_mesh, make_synthetic_head
+from heaicare_capture_sim.head import (
+    MESH_DIR,
+    SYNTHETIC,
+    Head,
+    load_head,
+    load_mesh,
+)
 from heaicare_capture_sim.renderer import Renderer, RenderWorker
 from heaicare_capture_sim.rig import (
     MAX_HEIGHT,
@@ -36,20 +44,97 @@ PREVIEW_MAX_WIDTH = 480
 _SKIN_RGB = (222, 171, 148)
 
 
-def run(rig_path: Path | None, mesh_path: Path | None, port: int) -> None:
+def _to_trimesh(head: Head) -> trimesh.Trimesh:
+    """One part of the head as a textured mesh for the browser's 3D view.
+
+    Open3D stores UVs per triangle corner, so vertices are unwelded (one per
+    corner). The texture is flipped exactly as ``Renderer.set_scene`` does.
+
+    Parameters
+    ----------
+    head : Head
+        A head or one of its extras (``extras`` are not followed).
+
+    Returns
+    -------
+    trimesh.Trimesh
+        Textured mesh, or a flat skin-coloured one if the part has no texture.
+    """
+    tris = np.asarray(head.mesh.triangles)
+    vertices = np.asarray(head.mesh.vertices)[tris].reshape(-1, 3)
+    faces = np.arange(len(vertices)).reshape(-1, 3)
+    if head.texture is None or not head.mesh.has_triangle_uvs():
+        return trimesh.Trimesh(vertices, faces, face_colors=_SKIN_RGB, process=False)
+    see_through = head.texture.shape[2] == 4
+    material = trimesh.visual.material.PBRMaterial(
+        baseColorTexture=Image.fromarray(np.ascontiguousarray(head.texture[::-1])),
+        metallicFactor=0.0,
+        roughnessFactor=1.0,
+        alphaMode="BLEND" if see_through else "OPAQUE",
+        doubleSided=see_through,  # hair cards are seen from both sides
+    )
+    visual = trimesh.visual.TextureVisuals(
+        uv=np.asarray(head.mesh.triangle_uvs), material=material
+    )
+    return trimesh.Trimesh(vertices, faces, visual=visual, process=False)
+
+
+def _mesh_options(mesh_dir: Path, current: str) -> list[str]:
+    """Head choices: the synthetic head, each ``mesh_dir/<head>/*.obj``, and ``current``.
+
+    Parameters
+    ----------
+    mesh_dir : Path
+        Folder with one subfolder per ready-to-use head (world frame, mm).
+    current : str
+        Source of the head on screen (kept even if it lives elsewhere).
+
+    Returns
+    -------
+    list of str
+        "synthetic" first, then mesh paths sorted by name.
+    """
+    paths = sorted(str(p) for p in Path(mesh_dir).glob("*/*.obj"))
+    return [
+        SYNTHETIC,
+        *paths,
+        *([current] if current not in (SYNTHETIC, *paths) else []),
+    ]
+
+
+def _first_head() -> Head:
+    """The first head in ``MESH_DIR`` (by folder name), or the synthetic head.
+
+    Returns
+    -------
+    Head
+        The head the GUI starts on; a mesh that fails to load is skipped with a
+        warning.
+    """
+    for name in _mesh_options(MESH_DIR, SYNTHETIC)[1:2]:
+        try:
+            return load_mesh(Path(name))
+        except (ValueError, OSError):
+            _log.warning("could not load %s; starting on the synthetic head", name)
+    return load_head(SYNTHETIC)
+
+
+def run(rig_path: Path | None, port: int) -> None:
     """Start the GUI server and block until interrupted.
+
+    The head is picked in the GUI's Head panel; it starts on the first mesh in
+    ``MESH_DIR``, or the synthetic head if there is none.
 
     Parameters
     ----------
     rig_path : Path or None
         Rig JSON to load; ``None`` starts from an 8-camera ring.
-    mesh_path : Path or None
-        Head mesh to load; ``None`` uses the synthetic head.
     port : int
         TCP port for the viser server.
     """
-    head = load_mesh(mesh_path) if mesh_path else make_synthetic_head()
     rig = load_rig(rig_path) if rig_path else ring(8, 300.0, 100.0)
+    MESH_DIR.mkdir(exist_ok=True)
+    head = _first_head()
     worker = RenderWorker(lambda: Renderer(MAX_WIDTH, MAX_HEIGHT))
     server = None
     try:
@@ -92,6 +177,7 @@ class _Gui:
         self.server, self.worker, self.head, self.rig = server, worker, head, rig
         self.selected, self.syncing, self.preview_gen = 0, False, 0
         self.frustums: list = []
+        self.head_parts: list = []
         self._lock = (
             threading.RLock()
         )  # reentrant: server-side .value sets re-enter handlers
@@ -105,13 +191,16 @@ class _Gui:
             (0.0, 0.0, 1.0),
         )
         cam.near, cam.far = 1.0, 10000.0
-        server.scene.add_mesh_simple(
-            "/head",
-            vertices=np.asarray(head.mesh.vertices, dtype=np.float32),
-            faces=np.asarray(head.mesh.triangles, dtype=np.uint32),
-            color=_SKIN_RGB,
-        )
+        self._draw_head()
         gui = server.gui
+        with gui.add_folder("Head"):
+            self.mesh_dropdown = gui.add_dropdown(
+                "Mesh",
+                options=_mesh_options(MESH_DIR, head.source),
+                initial_value=head.source,
+            )
+            self.mesh_dropdown.on_update(self._on_mesh)
+            gui.add_button("Reload").on_click(self._rescan)
         with gui.add_folder("Rig file"):
             self.rig_path = gui.add_text("Path", initial_value="rig.json")
             gui.add_button("Load rig").on_click(self._load)
@@ -182,6 +271,14 @@ class _Gui:
         self._draw_frustums()
         self._refresh_preview()
 
+    def _draw_head(self) -> None:
+        for handle in self.head_parts:
+            handle.remove()
+        self.head_parts = [
+            self.server.scene.add_mesh_trimesh(f"/head/part{i}", _to_trimesh(part))
+            for i, part in enumerate((self.head, *self.head.extras))
+        ]
+
     def _draw_frustums(self) -> None:
         for handle in self.frustums:
             handle.remove()
@@ -206,7 +303,7 @@ class _Gui:
         def job(r: Renderer) -> np.ndarray | None:
             if gen != self.preview_gen:  # a newer edit superseded this one
                 return None
-            r.set_scene([head])
+            r.set_scene([head, *head.extras])
             return r.render(cam)
 
         self.worker.submit(job).add_done_callback(self._show_preview)
@@ -324,6 +421,43 @@ class _Gui:
             _notify(event, "Invalid dome", str(exc))
             return
         self._set_rig(rig.cameras, 0, event)
+
+    def _sync_mesh_dropdown(self) -> None:
+        self.syncing = True
+        try:
+            self.mesh_dropdown.options = _mesh_options(MESH_DIR, self.head.source)
+            self.mesh_dropdown.value = self.head.source
+        finally:
+            self.syncing = False
+
+    def _show_head(self, head: Head) -> None:
+        _log.info("head: %s", head.source)
+        self.head = head
+        self._draw_head()
+        self._refresh_preview()
+
+    @_locked
+    def _rescan(self, event) -> None:
+        """Reload the head on screen from disk, then rescan the mesh folder."""
+        if self.head.source != SYNTHETIC:
+            try:
+                self._show_head(load_mesh(Path(self.head.source)))
+            except (ValueError, OSError) as exc:
+                _notify(event, "Reload failed; keeping the head on screen", str(exc))
+        self._sync_mesh_dropdown()
+
+    @_locked
+    def _on_mesh(self, event) -> None:
+        choice = self.mesh_dropdown.value
+        if self.syncing or choice == self.head.source:
+            return
+        try:
+            head = load_head(choice)
+        except (ValueError, OSError) as exc:
+            _notify(event, "Mesh load failed", str(exc))
+            self._sync_mesh_dropdown()  # back to the head on screen
+            return
+        self._show_head(head)
 
     @_locked
     def _load(self, event) -> None:
