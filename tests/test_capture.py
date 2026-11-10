@@ -6,7 +6,7 @@ import open3d as o3d
 import pytest
 
 from heaicare_capture_sim.capture import capture, new_capture_dir
-from heaicare_capture_sim.head import make_synthetic_head
+from heaicare_capture_sim.head import Head, make_synthetic_head
 from heaicare_capture_sim.rig import Camera, Rig, load_rig, ring
 
 SMALL = ring(2, 300.0, 100.0, width=64, height=48)
@@ -19,7 +19,7 @@ class FakeRenderer:
         self.fail_on, self.rgb = fail_on, rgb
 
     def set_scene(self, meshes):
-        pass
+        self.scene = list(meshes)
 
     def render(self, cam):
         if cam.name == self.fail_on:
@@ -43,6 +43,19 @@ def test_output_layout_and_cameras_json(tmp_path):
         np.testing.assert_allclose(entry["K"], cam.K)
         np.testing.assert_allclose(entry["R"], cam.R)
         np.testing.assert_allclose(entry["t_mm"], cam.t_mm)
+
+
+def test_extras_rendered_but_not_in_ground_truth(tmp_path):
+    head = make_synthetic_head()
+    extra = Head(
+        o3d.geometry.TriangleMesh.create_box(5, 5, 5).translate((0, 70, 0)), None, "x"
+    )
+    head = Head(head.mesh, head.texture, head.source, extras=(extra,))
+    renderer = FakeRenderer()
+    out = capture(SMALL, head, tmp_path / "run", renderer)
+    assert renderer.scene == [head, extra]
+    gt = o3d.io.read_triangle_mesh(str(out / "ground_truth.ply"))
+    assert gt.get_max_bound()[1] < 61  # the head ends at y = 60; the box is at 70
 
 
 def test_non_empty_out_refused(tmp_path):

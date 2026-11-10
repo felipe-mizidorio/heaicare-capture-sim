@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -11,6 +13,8 @@ import open3d as o3d
 # Semi-axes (mm) of a neonatal-sized head: width x, length y (face +y), height z (crown +z).
 SEMI_AXES_MM = (47.5, 60.0, 50.0)
 _SKIN_RGB = np.array([0.87, 0.67, 0.58])
+MESH_DIR = Path("meshes")  # one folder per head: meshes/<name>/<any>.obj
+SYNTHETIC = "synthetic"
 
 
 @dataclass(frozen=True)
@@ -20,16 +24,21 @@ class Head:
     Attributes
     ----------
     mesh : o3d.geometry.TriangleMesh
-        Geometry in the world frame, mm.
+        Geometry in the world frame, mm. This is the ground-truth surface.
     texture : np.ndarray or None
-        Albedo map (H, W, 3) uint8 for the mesh UVs; None means use vertex colours.
+        Albedo map (H, W, 3) uint8 for the mesh UVs, or (H, W, 4) for a
+        see-through part; None means use vertex colours.
     source : str
         "synthetic" or the mesh file path.
+    extras : tuple of Head
+        Parts rendered with the head but left out of the ground truth
+        (eyes, eyebrows, eyelashes, tongue).
     """
 
     mesh: o3d.geometry.TriangleMesh
     texture: np.ndarray | None
     source: str
+    extras: tuple[Head, ...] = ()
 
 
 def _bilinear(grid: np.ndarray, h: int, w: int) -> np.ndarray:
@@ -104,8 +113,139 @@ def make_synthetic_head(seed: int = 0) -> Head:
     return Head(mesh=mesh, texture=_skin_texture(seed), source="synthetic")
 
 
+def _texture(mesh: o3d.geometry.TriangleMesh, k: int) -> np.ndarray | None:
+    """Texture of material ``k`` as RGB, or RGBA if any texel is see-through.
+
+    Parameters
+    ----------
+    mesh : o3d.geometry.TriangleMesh
+        Mesh as read by Open3D.
+    k : int
+        Material id.
+
+    Returns
+    -------
+    np.ndarray or None
+        (H, W, 3) or (H, W, 4) uint8, or None if the material has no texture.
+    """
+    image = np.asarray(mesh.textures[k]) if k < len(mesh.textures) else None
+    if image is None or image.ndim != 3:
+        return None
+    if image.shape[2] == 4 and (image[..., 3] < 255).any():
+        return image.copy()
+    return image[..., :3].copy()
+
+
+def _select(
+    mesh: o3d.geometry.TriangleMesh, keep: np.ndarray
+) -> o3d.geometry.TriangleMesh:
+    """Copy of ``mesh`` with only the ``keep`` triangles (UVs follow; materials dropped).
+
+    Parameters
+    ----------
+    mesh : o3d.geometry.TriangleMesh
+        Source mesh.
+    keep : np.ndarray
+        Boolean mask over triangles.
+
+    Returns
+    -------
+    o3d.geometry.TriangleMesh
+        The selected part.
+    """
+    part = o3d.geometry.TriangleMesh(mesh)
+    part.remove_triangles_by_mask(~keep)
+    part.remove_unreferenced_vertices()
+    part.textures, part.triangle_material_ids = [], o3d.utility.IntVector()
+    return part
+
+
+def _extra(part: Head) -> Head | None:
+    """Drop a see-through part's invisible triangles; make it opaque if it then is.
+
+    MakeHuman's eye has a clear cornea shell mapped to alpha-0 texels. Drawn with
+    the see-through shader, it shows the back of the eyeball; dropped, the
+    eyeball renders opaque and exact like the skin.
+
+    Parameters
+    ----------
+    part : Head
+        An extra part.
+
+    Returns
+    -------
+    Head or None
+        The part to render, or None if none of it is visible.
+    """
+    texture = part.texture
+    if texture is None or texture.shape[2] != 4 or not part.mesh.has_triangle_uvs():
+        return part
+    h, w = texture.shape[:2]
+    uv = np.asarray(part.mesh.triangle_uvs)
+    # In memory, Open3D textures have row 0 at v = 0 (see Renderer.set_scene).
+    rows = np.clip((uv[:, 1] * h).astype(int), 0, h - 1)
+    cols = np.clip((uv[:, 0] * w).astype(int), 0, w - 1)
+    # ponytail: alpha sampled at triangle corners only; a triangle whose corners
+    # are all opaque but whose interior is not renders opaque.
+    alpha = texture[rows, cols, 3].reshape(-1, 3)
+    visible = (alpha > 0).any(axis=1)
+    if not visible.any():
+        return None
+    mesh = part.mesh if visible.all() else _select(part.mesh, visible)
+    if (alpha[visible] == 255).all():
+        texture = texture[..., :3].copy()
+    return Head(mesh, texture, part.source)
+
+
+def _read(path: Path) -> o3d.geometry.TriangleMesh:
+    """Read a mesh file; OBJ polygons are fan-triangulated first.
+
+    Open3D silently drops OBJ faces with more than three corners (MakeHuman and
+    Blender write quads), so such files are rewritten to a temporary copy next
+    to ``path``, where the MTL and texture paths still resolve.
+
+    Parameters
+    ----------
+    path : Path
+        Mesh file.
+
+    Returns
+    -------
+    o3d.geometry.TriangleMesh
+        The mesh as Open3D reads it.
+    """
+    if path.suffix.lower() != ".obj":
+        return o3d.io.read_triangle_mesh(str(path))
+    lines, polygons = [], False
+    for line in path.read_text(errors="replace").splitlines():
+        corners = line.split()[1:] if line.startswith("f ") else []
+        if len(corners) > 3:
+            # ponytail: fan triangulation, exact for convex polygons (modeller quads);
+            # a concave polygon would need ear clipping.
+            polygons = True
+            lines += [
+                f"f {corners[0]} {corners[i]} {corners[i + 1]}"
+                for i in range(1, len(corners) - 1)
+            ]
+        else:
+            lines.append(line)
+    if not polygons:
+        return o3d.io.read_triangle_mesh(str(path))
+    fd, tmp = tempfile.mkstemp(prefix=f".{path.stem}.", suffix=".obj", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write("\n".join(lines) + "\n")
+        return o3d.io.read_triangle_mesh(tmp)
+    finally:
+        Path(tmp).unlink()
+
+
 def load_mesh(path: Path) -> Head:
     """Load a triangle mesh (PLY, OBJ, STL...) already in the world frame, mm.
+
+    In a multi-material mesh the first material is the head (the ground-truth
+    surface) and every other material becomes one of its ``extras``. Extras
+    lose triangles that sample only fully transparent texels.
 
     Parameters
     ----------
@@ -127,13 +267,60 @@ def load_mesh(path: Path) -> Head:
     path = Path(path)
     if not path.is_file():
         raise FileNotFoundError(f"mesh not found: {path}")
-    mesh = o3d.io.read_triangle_mesh(str(path))
+    mesh = _read(path)
     if len(mesh.triangles) == 0:
         raise ValueError(f"{path}: no triangles")
-    texture = (
-        np.asarray(mesh.textures[0])[..., :3].copy() if mesh.has_textures() else None
-    )
-    return Head(mesh=mesh, texture=texture, source=str(path))
+    # Open3D reads an OBJ as [empty default material, file materials...], so use
+    # the material ids the triangles reference rather than textures[0].
+    ids = np.asarray(mesh.triangle_material_ids, dtype=int)
+    used = np.unique(ids) if len(ids) else np.array([0])
+    parts = [
+        Head(
+            mesh if len(used) == 1 else _select(mesh, ids == k),
+            _texture(mesh, k),
+            str(path),
+        )
+        for k in used
+    ]
+    extras = tuple(e for e in map(_extra, parts[1:]) if e is not None)
+    return Head(parts[0].mesh, parts[0].texture, str(path), extras)
+
+
+def load_head(name: str | Path) -> Head:
+    """The synthetic head, a head folder in ``MESH_DIR`` by name, or a mesh path.
+
+    Parameters
+    ----------
+    name : str or Path
+        "synthetic"; a bare name such as "baby_head" for the one ``.obj`` in
+        ``MESH_DIR / "baby_head"`` (any file name); or any path (anything with a
+        directory part or a suffix).
+
+    Returns
+    -------
+    Head
+        The loaded head; ``source`` is "synthetic" or the resolved path.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the file or head folder does not exist.
+    ValueError
+        If a head folder does not hold exactly one ``.obj``, or the mesh has no
+        triangles.
+    """
+    if str(name) == SYNTHETIC:
+        return make_synthetic_head()
+    path = Path(name)
+    if path.parent == Path(".") and not path.suffix:
+        folder = MESH_DIR / path
+        if not folder.is_dir():
+            raise FileNotFoundError(f"head folder not found: {folder}/")
+        objs = sorted(folder.glob("*.obj"))
+        if len(objs) != 1:
+            raise ValueError(f"{folder}/ must hold one .obj, found {len(objs)}")
+        path = objs[0]
+    return load_mesh(path)
 
 
 def write_ground_truth(head: Head, path: Path) -> None:
