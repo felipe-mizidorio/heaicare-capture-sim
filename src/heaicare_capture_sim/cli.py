@@ -46,7 +46,7 @@ def _cmd_preset(args: argparse.Namespace) -> int:
 def _cmd_gui(args: argparse.Namespace) -> int:
     from heaicare_capture_sim.gui import run
 
-    run(args.rig, args.mesh, args.port)
+    run(args.rig, args.port)
     return 0
 
 
@@ -98,7 +98,6 @@ def _parser() -> argparse.ArgumentParser:
 
     g = sub.add_parser("gui", help="interactive rig editor in the browser")
     g.add_argument("--rig", type=Path)
-    g.add_argument("--mesh", type=Path)
     g.add_argument("--port", type=int, default=8080)
     g.set_defaults(func=_cmd_gui)
 
