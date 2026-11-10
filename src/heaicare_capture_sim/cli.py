@@ -1,4 +1,4 @@
-"""Command line: capture, preset, gui."""
+"""Command line: capture, preset, gui, import-mesh."""
 
 from __future__ import annotations
 
@@ -9,14 +9,15 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from heaicare_capture_sim.capture import capture, require_empty_dir
-from heaicare_capture_sim.head import load_mesh, make_synthetic_head
+from heaicare_capture_sim.head import SYNTHETIC, load_head
+from heaicare_capture_sim.importer import AXES, MAKEHUMAN, UNITS_MM, import_mesh
 from heaicare_capture_sim.rig import dome, load_rig, ring, save_rig
 
 
 def _cmd_capture(args: argparse.Namespace) -> int:
     rig = load_rig(args.rig)
     require_empty_dir(args.out)  # validate every input before starting Open3D
-    head = load_mesh(args.mesh) if args.mesh else make_synthetic_head()
+    head = load_head(args.mesh)
     from heaicare_capture_sim.renderer import Renderer
 
     renderer = (
@@ -49,6 +50,20 @@ def _cmd_gui(args: argparse.Namespace) -> int:
     return 0
 
 
+_PRESETS = {"makehuman": MAKEHUMAN}
+_IMPORT_OPTIONS = ("units", "up", "front", "neck_cut", "head_length_mm")
+
+
+def _cmd_import_mesh(args: argparse.Namespace) -> int:
+    options = dict(_PRESETS.get(args.preset, {}))
+    options.update(
+        {k: getattr(args, k) for k in _IMPORT_OPTIONS if getattr(args, k) is not None}
+    )
+    import_mesh(args.src, args.output, **options)
+    print(args.output)
+    return 0
+
+
 def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="heaicare-capture-sim")
     sub = p.add_subparsers(required=True)
@@ -56,7 +71,11 @@ def _parser() -> argparse.ArgumentParser:
     c = sub.add_parser("capture", help="render every camera of a rig")
     c.add_argument("--rig", type=Path, required=True)
     c.add_argument("--out", type=Path, required=True)
-    c.add_argument("--mesh", type=Path)
+    c.add_argument(
+        "--mesh",
+        default=SYNTHETIC,
+        help="'synthetic', a name in meshes/ (e.g. baby_head), or a mesh path",
+    )
     c.set_defaults(func=_cmd_capture)
 
     pr = sub.add_parser("preset", help="generate a rig file")
@@ -82,6 +101,23 @@ def _parser() -> argparse.ArgumentParser:
     g.add_argument("--mesh", type=Path)
     g.add_argument("--port", type=int, default=8080)
     g.set_defaults(func=_cmd_gui)
+
+    m = sub.add_parser(
+        "import-mesh", help="put any OBJ in the world frame as a head mesh"
+    )
+    m.add_argument("src", type=Path)
+    m.add_argument("-o", "--output", type=Path, required=True)
+    m.add_argument("--preset", choices=sorted(_PRESETS))
+    m.add_argument("--units", choices=sorted(UNITS_MM))
+    m.add_argument("--up", choices=sorted(AXES), help="source axis to the crown")
+    m.add_argument(
+        "--front", choices=sorted(AXES), help="source axis the face points along"
+    )
+    m.add_argument(
+        "--neck-cut", type=float, help="cut depth below crown, fraction of height"
+    )
+    m.add_argument("--head-length-mm", type=float, help="rescale to this head length")
+    m.set_defaults(func=_cmd_import_mesh)
     return p
 
 

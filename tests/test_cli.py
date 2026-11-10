@@ -93,6 +93,14 @@ def test_unreadable_mesh_exit_2(tmp_path):
     )
 
 
+def test_mesh_by_name_resolves_to_meshes_folder(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    save_rig(ring(2, 300.0, 100.0), tmp_path / "rig.json")
+    args = ["capture", "--rig", "rig.json", "--out", "o", "--mesh", "nobody"]
+    assert main(args) == 2
+    assert "meshes/nobody" in capsys.readouterr().err
+
+
 def test_capture_subprocess(tmp_path):
     # Subprocess: the test session already owns this process's one OffscreenRenderer.
     save_rig(ring(3, 300.0, 100.0, width=160, height=120), tmp_path / "rig.json")
