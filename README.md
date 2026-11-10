@@ -9,14 +9,14 @@ Virtual capture rig for the heAICare project. It renders synthetic images of a n
 In scope now:
 
 - One trigger captures every camera simultaneously, from a GUI button or a CLI command. Both use the same engine, so the same rig gives identical output.
-- A synthetic neonatal head with procedural skin texture (real meshes load through the same path later).
+- A synthetic neonatal head with procedural skin texture, or a head mesh from a file (any OBJ via `import-mesh`, e.g. from MakeHuman, see below).
 - Ideal pinhole cameras defined by datasheet values (resolution, focal length in mm, pixel size in µm).
 - Head alone on a neutral background, fixed neutral lighting.
 - Output per capture: images, camera parameters (OpenCV convention), ground-truth mesh.
 
 Out of scope: running the reconstruction pipeline, and scoring results.
 
-Planned later: per-camera depth maps and vault masks; lens distortion, noise and blur; configurable lights; a mattress under the head; real head meshes.
+Planned later: per-camera depth maps and vault masks; lens distortion, noise and blur; configurable lights; a mattress under the head.
 
 ## Install
 
@@ -32,26 +32,60 @@ heaicare-capture-sim preset ring --n 8 --radius-mm 300 --height-mm 100 -o rig.js
 heaicare-capture-sim preset dome --n 12 --radius-mm 300 --min-elevation-deg 20 -o rig.json
 
 # Capture every camera in the rig
-heaicare-capture-sim capture --rig rig.json --out captures/run01 [--mesh head.ply]
+heaicare-capture-sim capture --rig rig.json --out captures/run01 [--mesh baby_head]
 
 # Interactive GUI (opens in the browser at http://localhost:8080)
-heaicare-capture-sim gui [--rig rig.json] [--mesh head.ply] [--port 8080]
+heaicare-capture-sim gui [--rig rig.json] [--port 8080]
 ```
 
-Without `--mesh`, the synthetic head is used.
+Heads live in the project's `meshes/` folder, **one folder per head** holding its `.obj`, `.mtl` and textures:
 
-### Preset options
+```
+meshes/
+├── baby_head/
+│   ├── baby_head.obj
+│   ├── baby_head.mtl
+│   └── baby_head_0.png …
+└── scan_01/
+    └── model.obj          (any file name)
+```
 
-| Preset | Options |
-|---|---|
-| `ring` | `--n`, `--radius-mm`, `--height-mm` (z of the ring plane), `--target-mm X Y Z` (default origin). Cameras are evenly spaced around the z axis, all aimed at the target. |
-| `dome` | `--n`, `--radius-mm`, `--min-elevation-deg`, `--target-mm X Y Z` (default origin). Cameras are spread evenly (Fibonacci pattern) over the hemisphere above the crown, all aimed at the target. |
+`capture --mesh` takes `synthetic` (the default), a head's folder name (`--mesh baby_head` loads the one `.obj` in `meshes/baby_head/`; zero or several is an error), or any mesh path (anything with a `/` or an extension). The GUI picks the head in its **Head** panel and starts on the first head in `meshes/`, or the synthetic head if there is none. A mesh must already be in the world frame (mm, see below); an OBJ keeps its textures, and its quads and other polygons are triangulated on load. In a multi-material mesh, the **first material is the head**: it is the ground-truth surface. Every other material (eyes, eyebrows, eyelashes, tongue) is rendered but left out of `ground_truth.ply`. A texture with transparent texels renders see-through; triangles that only touch fully transparent texels are not drawn.
 
-Both presets accept the camera options `--width`, `--height`, `--focal-length-mm` and `--pixel-size-um`. Defaults: 1920×1080, 8 mm, 3.45 µm.
+### Importing any mesh
+
+`import-mesh` puts an OBJ from any source (scan, Blender, MakeHuman...) in the world frame and writes a ready-to-use OBJ, typically into its own folder under `meshes/` (created if missing), where the GUI's **Head** panel lists it:
+
+```bash
+heaicare-capture-sim import-mesh scan.obj -o meshes/scan_01/scan_01.obj --units mm --up +z --front +y
+heaicare-capture-sim import-mesh baby.obj -o meshes/baby/baby.obj --preset makehuman
+```
+
+| Option | Meaning | Default |
+|---|---|---|
+| `--units` | Source units: `m`, `dm`, `cm`, `mm`, `inch` | `mm` |
+| `--up` | Source axis pointing to the crown: `+x`, `-x`, `+y`, `-y`, `+z`, `-z` | `+z` |
+| `--front` | Source axis the face points along (perpendicular to `--up`) | `+y` |
+| `--neck-cut` | Drop every triangle with a vertex more than this fraction of the height below the crown (for whole-body models; the neck is left open) | no cut |
+| `--head-length-mm` | Rescale uniformly so the head's front-to-back extent, nose included, is this | no rescale |
+| `--preset makehuman` | `--units dm --up +y --front +z --neck-cut 0.25 --head-length-mm 120`; explicit options override it | — |
+
+The defaults change nothing but centring, so a mesh already in the world frame comes out as it went in, and a real scan keeps its true size. The head (ground truth) is the material with the most triangles; it is written as the first material, the other materials as extras. The head's bounding box is centred on the origin. Vertex colours are kept. The axes are never guessed: a wrong `--up` or `--front` puts the face in the wrong place, so check the result in the GUI.
+
+### Heads from MakeHuman
+
+The repository ships one such head, `meshes/baby_head/`: a MakeHuman 1.3.0 export (youngest age, *young asian male* skin, high-poly brown eyes, eyebrow011, eyelashes01, tongue01; all MakeHuman assets are CC0) converted with `--preset makehuman`.
+
+MakeHuman cannot make a newborn (its youngest age is 1 year), so the preset takes a 1-year-old and scales the head down to neonatal size (120 mm long, the synthetic head's length).
+
+1. In MakeHuman, set **Age** to the minimum and pick a textured skin (**Materials → Skin**, e.g. *Young caucasian female*); the default skin has no texture. Choose eyes, eyebrows, eyelashes and tongue under **Geometries** as wanted; set teeth and hair to **None**. The eyebrows, eyelashes, tongue and textured skins come from MakeHuman's system assets pack (CC0).
+2. Export as **OBJ** in decimeters (the default).
+3. `heaicare-capture-sim import-mesh baby.obj -o meshes/baby/baby.obj --preset makehuman`, then pick it in the GUI's **Head** panel or pass `--mesh baby` to `capture`. Check the neck cut on your first export and adjust `--neck-cut` if it keeps neck or loses chin.
 
 ### GUI
 
-- **3D view:** the head plus one frustum per camera. The selected camera is highlighted; clicking a frustum selects it.
+- **Head:** a dropdown of `synthetic` and every `meshes/<head>/*.obj` (the folder is created on start if missing). Picking one swaps the head in the 3D view, preview and captures. **Reload** re-reads the head on screen from disk (so edits to its file show up) and rescans the folder for new files. Meshes there must already be in the world frame (convert other meshes with `import-mesh` first). A mesh that fails to load shows an error and the current head stays.
+- **3D view:** the textured head with all its parts (eyes, eyebrows, eyelashes, tongue), plus one frustum per camera. The browser lights it for viewing only; captures and the preview use the Open3D renderer. The selected camera is highlighted; clicking a frustum selects it.
 - **Camera panel:** a camera dropdown, then fields for the selected camera (eye, target, up, focal length, pixel size, resolution), with Add, Duplicate and Remove.
 - **Presets:** ring and dome with the same layout parameters as the CLI; the generated cameras reuse the selected camera's resolution, lens and target. Applying a preset replaces the camera list.
 - **Preview:** an Open3D render of the selected camera (scaled down), refreshed after edits. It uses the same renderer as capture.
@@ -124,5 +158,6 @@ A rig is always an explicit list of cameras; presets just generate this list.
 | Invalid rig (schema or geometry) | Every bad field is listed. The CLI exits with code 2; the GUI shows the message and keeps running. |
 | `--out` exists and isn't empty | The CLI refuses and exits with code 2. |
 | Unreadable mesh | Exit code 2 with the path and the reason. |
+| `import-mesh`: bad option (e.g. `--up` parallel to `--front`), output not `.obj`, no head above the neck cut | Exit code 2 with the reason. |
 | Capture fails partway | No partial folder is left. Output is written to a temporary folder next to the target and renamed only when complete. |
 | A camera sees none of the head | A warning; the image is still captured. That's a valid (bad) rig. |
