@@ -49,11 +49,20 @@ class Renderer:
         for i, head in enumerate(meshes):
             material = rendering.MaterialRecord()
             material.shader = "defaultUnlit"
+            mesh = head.mesh
             if head.texture is not None:
+                if head.texture.shape[2] == 4:
+                    # No unlit shader honours alpha. Reflectance off keeps the
+                    # see-through areas within 2 levels of what lies behind.
+                    material.shader = "defaultLitTransparency"
+                    material.base_reflectance, material.base_roughness = 0.0, 1.0
+                    mesh = o3d.geometry.TriangleMesh(mesh).compute_vertex_normals()
+                # Open3D's OBJ reader stores textures with row 0 at v = 0, but
+                # albedo_img samples row 0 at v = 1; flip so OBJ files render upright.
                 material.albedo_img = o3d.geometry.Image(
-                    np.ascontiguousarray(head.texture)
+                    np.ascontiguousarray(head.texture[::-1])
                 )
-            self._r.scene.add_geometry(f"mesh{i}", head.mesh, material)
+            self._r.scene.add_geometry(f"mesh{i}", mesh, material)
 
     def render(self, cam: Camera) -> np.ndarray:
         """Render one camera.
