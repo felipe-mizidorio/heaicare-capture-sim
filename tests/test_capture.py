@@ -18,7 +18,7 @@ class FakeRenderer:
     def __init__(self, fail_on: str | None = None, rgb=(200, 100, 50)):
         self.fail_on, self.rgb = fail_on, rgb
 
-    def set_scene(self, meshes):
+    def set_scene(self, meshes, scenario=None):
         self.scene = list(meshes)
 
     def render(self, cam):

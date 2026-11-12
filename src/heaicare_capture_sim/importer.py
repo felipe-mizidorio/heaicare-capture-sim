@@ -64,12 +64,14 @@ def import_mesh(
     front: str = "+y",
     neck_cut: float | None = None,
     head_length_mm: float | None = None,
+    keep_body: bool = False,
 ) -> Head:
     """Put a mesh in the world frame and save it as a ready-to-use OBJ.
 
     Every part (material) is converted to mm and rotated so ``up`` is +z and
     ``front`` is +y. Optionally, triangles with a vertex more than
-    ``neck_cut`` x height below the crown are dropped, and all parts are scaled
+    ``neck_cut`` x height below the crown are dropped (or, with ``keep_body``,
+    the skin below the cut is kept as a rendered-only part), and all parts are scaled
     uniformly so the head's front-to-back (y) extent is ``head_length_mm``.
     Finally the head's bounding box is centred on the origin. The head (ground
     truth) is the material with the most triangles; it is written as the first
@@ -95,6 +97,10 @@ def import_mesh(
     head_length_mm : float or None, optional
         Rescale to this front-to-back head extent; None (default) keeps the
         source size. For models that are not neonatal size.
+    keep_body : bool, optional
+        With ``neck_cut``, keep the head material below the cut as an extra
+        part: rendered (it occludes like a real body) but not ground truth.
+        Default False.
 
     Returns
     -------
@@ -120,6 +126,8 @@ def import_mesh(
         math.isfinite(head_length_mm) and head_length_mm > 0
     ):
         raise ValueError(f"head_length_mm must be positive, got {head_length_mm}")
+    if keep_body and neck_cut is None:
+        raise ValueError("keep_body needs neck_cut: the body is what lies below it")
     if dst.suffix.lower() != ".obj":
         raise ValueError(f"{dst}: output must be .obj to keep the textures")
 
@@ -134,9 +142,12 @@ def import_mesh(
     if neck_cut is not None:
         z = np.asarray(head.mesh.vertices)[:, 2]
         cut = z.max() - neck_cut * (z.max() - z.min())
+        body = o3d.geometry.TriangleMesh(head.mesh)
         if not _keep_above(head.mesh, cut):
             raise ValueError(f"{src}: no head left above the neck cut")
         parts = [p for p in parts if _keep_above(p.mesh, cut)]
+        if keep_body and _keep_above(body, cut, above=False):
+            parts.append(Head(body, head.texture, head.source))
 
     lo, hi = head.mesh.get_min_bound(), head.mesh.get_max_bound()
     scale = 1.0 if head_length_mm is None else head_length_mm / (hi[1] - lo[1])
@@ -150,8 +161,13 @@ def import_mesh(
     return load_mesh(dst)
 
 
-def _keep_above(mesh: o3d.geometry.TriangleMesh, cut: float) -> bool:
+def _keep_above(
+    mesh: o3d.geometry.TriangleMesh, cut: float, above: bool = True
+) -> bool:
     """Drop triangles with a vertex below z = ``cut``; False if none remain.
+
+    With ``above=False`` keep exactly those triangles instead, so the two
+    calls split a mesh without gap or overlap.
 
     Parameters
     ----------
@@ -159,6 +175,8 @@ def _keep_above(mesh: o3d.geometry.TriangleMesh, cut: float) -> bool:
         Mesh to cut in place.
     cut : float
         Cut height, mm.
+    above : bool, optional
+        Keep the part above the cut (default True) or the rest.
 
     Returns
     -------
@@ -167,7 +185,7 @@ def _keep_above(mesh: o3d.geometry.TriangleMesh, cut: float) -> bool:
     """
     z = np.asarray(mesh.vertices)[:, 2]
     below = (z[np.asarray(mesh.triangles)] < cut).any(axis=1)
-    mesh.remove_triangles_by_mask(below)
+    mesh.remove_triangles_by_mask(below if above else ~below)
     mesh.remove_unreferenced_vertices()
     return len(mesh.triangles) > 0
 

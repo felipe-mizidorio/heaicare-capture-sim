@@ -12,6 +12,7 @@ from open3d.visualization import rendering
 
 from heaicare_capture_sim.head import Head
 from heaicare_capture_sim.rig import MAX_HEIGHT, MAX_WIDTH, Camera
+from heaicare_capture_sim.scenario import Scenario
 
 # Requested grey; the rendered value is measured (see Renderer.background_rgb).
 _BACKGROUND = (0.5, 0.5, 0.5)
@@ -43,9 +44,19 @@ class Renderer:
             int(c) for c in empty[0, 0, :3]
         )
 
-    def set_scene(self, meshes: Sequence[Head]) -> None:
-        """Replace all geometry with ``meshes``."""
+    def set_scene(
+        self, meshes: Sequence[Head], scenario: Scenario | None = None
+    ) -> None:
+        """Replace all geometry with ``meshes`` (unlit) and ``scenario`` (shaded)."""
         self._r.scene.clear_geometry()
+        for i, (mesh, rgb) in enumerate(scenario.parts if scenario else ()):
+            # Shaded by Open3D's fixed default light so walls and edges stay
+            # visible; matte so no highlight moves with the camera.
+            material = rendering.MaterialRecord()
+            material.shader = "defaultLit"
+            material.base_color = [*rgb, 1.0]
+            material.base_roughness, material.base_reflectance = 1.0, 0.0
+            self._r.scene.add_geometry(f"scenario{i}", mesh, material)
         for i, head in enumerate(meshes):
             material = rendering.MaterialRecord()
             material.shader = "defaultUnlit"

@@ -12,18 +12,20 @@ from heaicare_capture_sim.capture import capture, require_empty_dir
 from heaicare_capture_sim.head import SYNTHETIC, load_head
 from heaicare_capture_sim.importer import AXES, MAKEHUMAN, UNITS_MM, import_mesh
 from heaicare_capture_sim.rig import dome, load_rig, ring, save_rig
+from heaicare_capture_sim.scenario import NONE, load_scenario
 
 
 def _cmd_capture(args: argparse.Namespace) -> int:
     rig = load_rig(args.rig)
     require_empty_dir(args.out)  # validate every input before starting Open3D
     head = load_head(args.mesh)
+    scenario = load_scenario(args.scenario)
     from heaicare_capture_sim.renderer import Renderer
 
     renderer = (
         Renderer()
     )  # same fixed viewport as the GUI, so both give identical pixels
-    print(capture(rig, head, args.out, renderer))
+    print(capture(rig, head, args.out, renderer, scenario))
     return 0
 
 
@@ -51,7 +53,7 @@ def _cmd_gui(args: argparse.Namespace) -> int:
 
 
 _PRESETS = {"makehuman": MAKEHUMAN}
-_IMPORT_OPTIONS = ("units", "up", "front", "neck_cut", "head_length_mm")
+_IMPORT_OPTIONS = ("units", "up", "front", "neck_cut", "head_length_mm", "keep_body")
 
 
 def _cmd_import_mesh(args: argparse.Namespace) -> int:
@@ -75,6 +77,11 @@ def _parser() -> argparse.ArgumentParser:
         "--mesh",
         default=SYNTHETIC,
         help="'synthetic', a name in meshes/ (e.g. baby_head), or a mesh path",
+    )
+    c.add_argument(
+        "--scenario",
+        default=NONE,
+        help="'none', a name in scenarios/ (e.g. greybox), or a scenario.json path",
     )
     c.set_defaults(func=_cmd_capture)
 
@@ -116,6 +123,12 @@ def _parser() -> argparse.ArgumentParser:
         "--neck-cut", type=float, help="cut depth below crown, fraction of height"
     )
     m.add_argument("--head-length-mm", type=float, help="rescale to this head length")
+    m.add_argument(
+        "--keep-body",
+        action="store_true",
+        default=None,
+        help="keep the skin below the neck cut, rendered but not ground truth",
+    )
     m.set_defaults(func=_cmd_import_mesh)
     return p
 
