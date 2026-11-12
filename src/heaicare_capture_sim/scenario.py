@@ -10,6 +10,7 @@ import open3d as o3d
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from heaicare_capture_sim.importer import AXES, UNITS_MM, to_world
+from heaicare_capture_sim.rig import Vec3
 
 SCENARIO_DIR = Path(
     "scenarios"
@@ -22,7 +23,10 @@ class ScenarioSpec(BaseModel):
 
     ``up`` and ``front`` are the model's axes that become world +z (crown) and
     +y (face); ``head`` is the model point, in model units, that becomes the
-    world origin (head centre).
+    world origin (head centre). ``baby_offset_mm`` and ``baby_yaw_deg`` then
+    move the baby (head and rig together) inside the room: a turn about the
+    vertical through ``head`` and a shift, in room axes (both 0 by default; set
+    by the GUI). Outputs stay head-centred, so the room is moved the other way.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True, allow_inf_nan=False)
@@ -32,6 +36,8 @@ class ScenarioSpec(BaseModel):
     up: str
     front: str
     head: tuple[float, float, float]
+    baby_offset_mm: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    baby_yaw_deg: float = 0.0
 
     @field_validator("file")
     @classmethod
@@ -56,13 +62,31 @@ class ScenarioSpec(BaseModel):
             raise ValueError(f"axis must be one of {sorted(AXES)}, got {v!r}")
         return v
 
+    def baby_pose(self) -> np.ndarray:
+        """4x4 head frame -> room frame: ``baby_yaw_deg`` about z, then the offset.
+
+        The room frame is the world frame of an unmoved baby (``head`` at the
+        origin), so the identity means the baby sits at ``head``.
+
+        Returns
+        -------
+        np.ndarray
+            Rigid transform.
+        """
+        yaw = np.radians(self.baby_yaw_deg)
+        t = np.eye(4)
+        t[:2, :2] = ((np.cos(yaw), -np.sin(yaw)), (np.sin(yaw), np.cos(yaw)))
+        t[:3, 3] = self.baby_offset_mm
+        return t
+
     def to_world(self) -> np.ndarray:
         """4x4 transform from model coordinates to the world frame (mm).
 
         Returns
         -------
         np.ndarray
-            Scaled proper rotation plus translation; ``head`` maps to the origin.
+            Scaled proper rotation plus translation; ``head`` maps to the origin,
+            then the room is moved by the inverse of ``baby_pose()``.
 
         Raises
         ------
@@ -72,7 +96,7 @@ class ScenarioSpec(BaseModel):
         rs = to_world(self.up, self.front) * UNITS_MM[self.units]
         t = np.eye(4)
         t[:3, :3], t[:3, 3] = rs, -rs @ np.asarray(self.head)
-        return t
+        return np.linalg.inv(self.baby_pose()) @ t
 
 
 @dataclass(frozen=True)
@@ -85,10 +109,61 @@ class Scenario:
         One mesh per model part with its material's base colour (RGB, 0..1).
     source : str
         Path of the ``scenario.json``.
+    spec : ScenarioSpec
+        The spec the parts were placed with.
     """
 
     parts: tuple[tuple[o3d.geometry.TriangleMesh, tuple[float, float, float]], ...]
     source: str
+    spec: ScenarioSpec
+
+    def with_baby(self, offset_mm: Vec3, yaw_deg: float) -> Scenario:
+        """The same scenario with the baby at a new pose in the room.
+
+        Parameters
+        ----------
+        offset_mm : Vec3
+            New ``ScenarioSpec.baby_offset_mm``.
+        yaw_deg : float
+            New ``ScenarioSpec.baby_yaw_deg``.
+
+        Returns
+        -------
+        Scenario
+            Parts moved around the head; ``self`` is unchanged.
+
+        Raises
+        ------
+        ValueError
+            If a value is NaN or infinite.
+        """
+        spec = ScenarioSpec.model_validate(
+            self.spec.model_dump()
+            | {"baby_offset_mm": offset_mm, "baby_yaw_deg": yaw_deg}
+        )
+        move = np.linalg.inv(spec.baby_pose()) @ self.spec.baby_pose()
+        parts = tuple(
+            (o3d.geometry.TriangleMesh(mesh).transform(move), rgb)
+            for mesh, rgb in self.parts
+        )
+        return Scenario(parts, self.source, spec)
+
+
+def save_scenario(scenario: Scenario) -> None:
+    """Write the scenario's spec, baby pose included, back to its ``scenario.json``.
+
+    Parameters
+    ----------
+    scenario : Scenario
+        Scenario whose ``source`` is the file to overwrite. Default baby pose
+        fields are left out, so an unmoved baby keeps the original file.
+    """
+    path = Path(scenario.source)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(
+        scenario.spec.model_dump_json(indent=2, exclude_defaults=True) + "\n"
+    )
+    tmp.replace(path)  # atomic: a crash never leaves a half-written scenario.json
 
 
 def load_scenario(name: str | Path) -> Scenario | None:
@@ -138,4 +213,4 @@ def load_scenario(name: str | Path) -> Scenario | None:
         parts.append((mesh, rgb))
     if not any(len(mesh.triangles) for mesh, _ in parts):
         raise ValueError(f"{model_path}: no triangles")
-    return Scenario(tuple(parts), str(path))
+    return Scenario(tuple(parts), str(path), spec)

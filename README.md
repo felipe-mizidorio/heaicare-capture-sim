@@ -112,6 +112,7 @@ scenarios/
 | `units` | Model units as Open3D reads them: `m`, `dm`, `cm`, `mm`, `inch` |
 | `up`, `front` | Model axes that become world +z (crown) and +y (face), as in `import-mesh` |
 | `head` | Model point, in model units, where the head centre (world origin) goes |
+| `baby_offset_mm`, `baby_yaw_deg` | Optional, default 0: moves the baby, with its cameras, away from `head` inside the room: a turn about the vertical (counter-clockwise seen from above), then a shift in the room's x, y, z (mm, world axes). Outputs stay head-centred, so the room is rendered moved the other way. The GUI writes these |
 
 The head stays at the world origin, so rigs and ground truth are unchanged; the room is moved around it. Only material base colours are used (textures are ignored). `greybox` is a 4 × 4 m room with six floor-to-ceiling poles around a 90 cm high box; `head` puts `meshes/baby_body` standing on the box, facing the room's +z. With another head or pose, adjust `head[1]` (height) so the body rests on the box; other heads float above it.
 
@@ -120,9 +121,10 @@ The head stays at the world origin, so rigs and ground truth are unchanged; the 
 ### GUI
 
 - **Head:** a dropdown of `synthetic` and every `meshes/<head>/*.obj` (the folder is created on start if missing). Picking one swaps the head in the 3D view, preview and captures. **Reload** re-reads the head on screen from disk (so edits to its file show up) and rescans the folder for new files. Meshes there must already be in the world frame (convert other meshes with `import-mesh` first). A mesh that fails to load shows an error and the current head stays.
-- **Scenario:** a dropdown of `none` and every `scenarios/<name>/scenario.json`. Picking one draws the room in the 3D view and adds it to the preview and captures. **Reload scenario** re-reads it from disk (e.g. after editing `scenario.json` or re-exporting the model) and rescans the folder.
-- **3D view:** the textured head with all its parts (eyes, eyebrows, eyelashes, tongue), plus one frustum per camera. The browser lights it for viewing only; captures and the preview use the Open3D renderer. The selected camera is highlighted; clicking a frustum selects it.
+- **Scenario:** a dropdown of `none` and every `scenarios/<name>/scenario.json`. Picking one draws the room in the 3D view and adds it to the preview and captures. **Reload scenario** re-reads it from disk (e.g. after editing `scenario.json` or re-exporting the model) and rescans the folder. The room stays still in the 3D view. **Baby offset (mm)** and **Baby yaw (°)** move the baby inside it, and the cameras move with the baby (the rig is relative to the head); the baby can also be dragged by the gizmo at its feet. **Save scenario** writes the baby pose into the `scenario.json`, so `capture --scenario` reproduces it. Room objects (poles, box) can't be moved individually.
+- **3D view:** the textured head with all its parts (eyes, eyebrows, eyelashes, tongue), plus one frustum per camera. The browser lights it for viewing only; captures and the preview use the Open3D renderer. The selected camera is highlighted; clicking a frustum selects it. The selected camera has a move gizmo: dragging it moves the camera's eye, the camera keeps looking at its target, and the fields and preview follow. A second gizmo at the centre of all eyes drags every camera together.
 - **Camera panel:** a camera dropdown, then fields for the selected camera (eye, target, up, focal length, pixel size, resolution), with Add, Duplicate and Remove.
+- **Move all cameras:** **Shift (mm)** and **Turn (°)**, then **Apply move**, move every camera rigidly: a turn about the vertical through the mean of the targets (a ring spins around its centre), then a shift. Each click applies the move again.
 - **Presets:** ring and dome with the same layout parameters as the CLI; the generated cameras reuse the selected camera's resolution, lens and target. Applying a preset replaces the camera list.
 - **Preview:** an Open3D render of the selected camera (scaled down), refreshed after edits. It uses the same renderer as capture.
 - **Buttons:** Load rig, Save rig, and Capture. Capture writes `captures/<timestamp>/` and shows the path.
@@ -173,6 +175,7 @@ A rig is always an explicit list of cameras; presets just generate this list.
   "version": "0.1.0",
   "mesh_source": "synthetic",
   "scenario_source": null,
+  "scenario": null,
   "cameras": [
     {
       "name": "cam00",
@@ -186,7 +189,7 @@ A rig is always an explicit list of cameras; presets just generate this list.
 }
 ```
 
-`scenario_source` is the `scenario.json` path, or `null` without a scenario. `K`, `R` and `t_mm` use the OpenCV convention. `R` and `t_mm` map world to camera (`x_cam = R @ x_world + t`). The camera axes are x right, y down, z forward.
+`scenario_source` is the `scenario.json` path, or `null` without a scenario. `scenario` is the scenario spec as used for this capture (all `scenario.json` fields, baby pose included, even if moved in the GUI and not saved), or `null`. `K`, `R` and `t_mm` use the OpenCV convention. `R` and `t_mm` map world to camera (`x_cam = R @ x_world + t`). The camera axes are x right, y down, z forward.
 
 ## Errors
 

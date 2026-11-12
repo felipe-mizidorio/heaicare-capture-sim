@@ -9,7 +9,7 @@ from heaicare_capture_sim.cli import main
 from heaicare_capture_sim.gui import _scenario_options
 from heaicare_capture_sim.head import make_synthetic_head
 from heaicare_capture_sim.rig import Camera, ring, save_rig
-from heaicare_capture_sim.scenario import ScenarioSpec, load_scenario
+from heaicare_capture_sim.scenario import ScenarioSpec, load_scenario, save_scenario
 
 GREYBOX = "scenarios/greybox/scenario.json"
 
@@ -44,6 +44,7 @@ def test_spec_maps_head_to_origin_and_up_to_z():
         {"front": "+y"},  # parallel to up
         {"file": "../floor.obj"},
         {"head": [0, float("nan"), 0]},
+        {"baby_yaw_deg": float("inf")},
         {"extra": 1},
     ],
 )
@@ -73,6 +74,39 @@ def test_floor_lands_below_the_head(tmp_path):
     np.testing.assert_allclose(hi[2], -200.0, atol=1e-6)  # 20 cm below, in mm
     np.testing.assert_allclose([lo[0], hi[0]], [-1000.0, 1000.0], atol=1e-6)
     assert len(rgb) == 3
+
+
+def test_baby_pose_moves_the_room_the_other_way():
+    spec = ScenarioSpec(
+        file="m.fbx", units="cm", up="+z", front="+y", head=(0, 0, 0),
+        baby_yaw_deg=90.0, baby_offset_mm=(5.0, 0.0, 0.0),
+    )  # fmt: skip
+    t = spec.to_world()
+    # The room point the baby moved to (5 mm = 0.5 cm along x) is the head centre.
+    np.testing.assert_allclose(t @ [0.5, 0, 0, 1], [0, 0, 0, 1], atol=1e-12)
+    # Turned 90° left, the baby faces room -x: 1 cm further along -x is +y (front).
+    np.testing.assert_allclose(t @ [-0.5, 0, 0, 1], [0, 10, 0, 1], atol=1e-12)
+
+
+def test_moved_room_matches_reload_after_save(tmp_path):
+    path = _floor_scenario(tmp_path / "s")
+    original = (tmp_path / "s/scenario.json").read_text()
+    scenario = load_scenario(path)
+    save_scenario(scenario)  # unmoved: no baby pose fields written
+    assert json.loads((tmp_path / "s/scenario.json").read_text()) == json.loads(
+        original
+    )
+    moved = scenario.with_baby((10, -20, 30), 33.0).with_baby((1.0, 2.0, 3.0), 45.0)
+    assert scenario.spec.baby_offset_mm == (0.0, 0.0, 0.0)  # original untouched
+    with pytest.raises(ValueError):
+        scenario.with_baby((float("nan"), 0.0, 0.0), 0.0)
+    save_scenario(moved)
+    reloaded = load_scenario(path)
+    assert reloaded.spec == moved.spec
+    for (a, _), (b, _) in zip(moved.parts, reloaded.parts, strict=True):
+        np.testing.assert_allclose(
+            np.asarray(a.vertices), np.asarray(b.vertices), atol=1e-9
+        )
 
 
 def test_greybox_loads():
@@ -120,6 +154,7 @@ def test_capture_records_scenario_and_keeps_it_out_of_ground_truth(tmp_path):
     assert renderer.scenario is scenario
     meta = json.loads((out / "cameras.json").read_text())
     assert meta["scenario_source"] == scenario.source
+    assert ScenarioSpec.model_validate(meta["scenario"]) == scenario.spec
     assert json.loads((plain / "cameras.json").read_text())["scenario_source"] is None
     gt = (out / "ground_truth.ply").read_bytes()
     assert gt == (plain / "ground_truth.ply").read_bytes()
