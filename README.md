@@ -8,7 +8,7 @@ Virtual capture rig for the heAICare project. It renders synthetic images of a n
 
 In scope now:
 
-- One trigger captures every camera simultaneously, from a GUI button or a CLI command. Both use the same engine, so the same rig gives identical output.
+- One trigger captures every camera simultaneously, from a GUI button, a CLI command or an HTTP request. All use the same engine, so the same rig gives identical output.
 - A synthetic neonatal head with procedural skin texture, or a head mesh from a file (any OBJ via `import-mesh`, e.g. from MakeHuman, see below).
 - Ideal pinhole cameras defined by datasheet values (resolution, focal length in mm, pixel size in µm).
 - Head on a neutral background, or inside a scenario (a room model such as `scenarios/greybox/`, see below), optionally with a full rendered body. Fixed lighting: the head is unlit, the scenario shaded by one fixed light.
@@ -36,6 +36,9 @@ heaicare-capture-sim capture --rig rig.json --out captures/run01 [--mesh baby_bo
 
 # Interactive GUI (opens in the browser at http://localhost:8080)
 heaicare-capture-sim gui [--rig rig.json] [--port 8080]
+
+# HTTP API for scripts (http://127.0.0.1:8000, see "HTTP API" below)
+heaicare-capture-sim serve [--port 8000]
 ```
 
 Heads live in the project's `meshes/` folder, **one folder per head** holding its `.obj`, `.mtl` and textures:
@@ -129,6 +132,39 @@ The head stays at the world origin, so rigs and ground truth are unchanged; the 
 - **Preview:** an Open3D render of the selected camera (scaled down), refreshed after edits. It uses the same renderer as capture.
 - **Buttons:** Load rig, Save rig, and Capture. Capture writes `captures/<timestamp>/` and shows the path.
 
+### HTTP API
+
+`serve` keeps one renderer running and captures every camera of a posted rig, so sweeps skip the renderer start-up of each `capture` call. It listens on `127.0.0.1` only (no authentication, not reachable from other machines); interactive docs are at `http://127.0.0.1:8000/docs`. Captures run one at a time; further requests wait their turn. Stop it with Ctrl-C.
+
+`POST /capture` with `Content-Type: application/json` (any other content type is refused):
+
+```json
+{
+  "rig": { "cameras": [ ... ] },
+  "mesh": "synthetic",
+  "scenario": "none",
+  "out": "captures/sweep/n08"
+}
+```
+
+| Field | Meaning | Default |
+|---|---|---|
+| `rig` | A rig, same schema as the rig file | required |
+| `mesh` | As `capture --mesh` | `synthetic` |
+| `scenario` | As `capture --scenario` | `none` |
+| `out` | Missing or empty output folder | `captures/<timestamp>/` |
+
+Relative paths and names resolve against the folder `serve` was started in. The reply comes once the capture folder is complete: `{"out": "<absolute path>", "cameras": {...}}`, where `cameras` is the folder's `cameras.json`. The images are read from disk:
+
+```python
+import json, urllib.request
+
+body = json.dumps({"rig": json.load(open("rig.json")), "mesh": "baby_body"}).encode()
+req = urllib.request.Request("http://127.0.0.1:8000/capture", body, {"Content-Type": "application/json"})
+reply = json.load(urllib.request.urlopen(req))
+images = [f"{reply['out']}/{c['image']}" for c in reply["cameras"]["cameras"]]
+```
+
 ## Coordinate frame
 
 Millimetres, right-handed, **z up**. The head centre is at the origin, the **crown points to +z**, and the **face points to +y** (ears along ±x).
@@ -195,10 +231,11 @@ A rig is always an explicit list of cameras; presets just generate this list.
 
 | Situation | Behaviour |
 |---|---|
-| Invalid rig (schema or geometry) | Every bad field is listed. The CLI exits with code 2; the GUI shows the message and keeps running. |
-| `--out` exists and isn't empty | The CLI refuses and exits with code 2. |
-| Unreadable mesh | Exit code 2 with the path and the reason. |
-| Unreadable or invalid scenario (`scenario.json` field, missing model) | Exit code 2 with the reason; the GUI shows it and keeps the scenario on screen. |
+| Invalid rig (schema or geometry) | Every bad field is listed. The CLI exits with code 2; the GUI shows the message and keeps running; the API replies 422. |
+| `--out` exists and isn't empty | The CLI refuses and exits with code 2; the API replies 400. |
+| Unreadable mesh | Exit code 2 with the path and the reason; the API replies 400 with the same message. |
+| Unreadable or invalid scenario (`scenario.json` field, missing model) | Exit code 2 with the reason; the GUI shows it and keeps the scenario on screen; the API replies 400. |
+| `serve`: port already in use | Exit code 2. |
 | `import-mesh`: bad option (e.g. `--up` parallel to `--front`), output not `.obj`, no head above the neck cut, `--keep-body` without a cut | Exit code 2 with the reason. |
 | Capture fails partway | No partial folder is left. Output is written to a temporary folder next to the target and renamed only when complete. |
 | A camera sees none of the head | A warning (without a scenario); the image is still captured. That's a valid (bad) rig. |

@@ -1,9 +1,10 @@
-"""Command line: capture, preset, gui, import-mesh."""
+"""Command line: capture, preset, gui, serve, import-mesh."""
 
 from __future__ import annotations
 
 import argparse
 import logging
+import socket
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -49,6 +50,18 @@ def _cmd_gui(args: argparse.Namespace) -> int:
     from heaicare_capture_sim.gui import run
 
     run(args.rig, args.port)
+    return 0
+
+
+def _cmd_serve(args: argparse.Namespace) -> int:
+    from heaicare_capture_sim.server import HOST, serve
+
+    # Bind first: a taken port fails (exit 2) before Open3D starts.
+    with socket.create_server((HOST, args.port)) as sock:
+        try:
+            serve(sock)
+        except KeyboardInterrupt:  # uvicorn re-raises Ctrl-C after a clean shutdown
+            pass
     return 0
 
 
@@ -107,6 +120,10 @@ def _parser() -> argparse.ArgumentParser:
     g.add_argument("--rig", type=Path)
     g.add_argument("--port", type=int, default=8080)
     g.set_defaults(func=_cmd_gui)
+
+    s = sub.add_parser("serve", help="HTTP API: POST /capture on localhost")
+    s.add_argument("--port", type=int, default=8000)
+    s.set_defaults(func=_cmd_serve)
 
     m = sub.add_parser(
         "import-mesh", help="put any OBJ in the world frame as a head mesh"
