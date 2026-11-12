@@ -1,0 +1,32 @@
+# Created by Open3D 
+# object name: baby_body
+newmtl baby_body_0
+Ka 1.000 1.000 1.000
+Kd 1.000 1.000 1.000
+Ks 0.000 0.000 0.000
+map_Kd baby_body_0.png
+newmtl baby_body_1
+Ka 1.000 1.000 1.000
+Kd 1.000 1.000 1.000
+Ks 0.000 0.000 0.000
+map_Kd baby_body_1.png
+newmtl baby_body_2
+Ka 1.000 1.000 1.000
+Kd 1.000 1.000 1.000
+Ks 0.000 0.000 0.000
+map_Kd baby_body_2.png
+newmtl baby_body_3
+Ka 1.000 1.000 1.000
+Kd 1.000 1.000 1.000
+Ks 0.000 0.000 0.000
+map_Kd baby_body_3.png
+newmtl baby_body_4
+Ka 1.000 1.000 1.000
+Kd 1.000 1.000 1.000
+Ks 0.000 0.000 0.000
+map_Kd baby_body_4.png
+newmtl baby_body_5
+Ka 1.000 1.000 1.000
+Kd 1.000 1.000 1.000
+Ks 0.000 0.000 0.000
+map_Kd baby_body_5.png

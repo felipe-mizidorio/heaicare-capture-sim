@@ -16,6 +16,7 @@ import open3d as o3d
 
 from heaicare_capture_sim.head import Head, write_ground_truth
 from heaicare_capture_sim.rig import Rig, save_rig
+from heaicare_capture_sim.scenario import Scenario
 
 _log = logging.getLogger(__name__)
 
@@ -40,7 +41,9 @@ def new_capture_dir(root: Path) -> Path:
     raise AssertionError("unreachable")
 
 
-def capture(rig: Rig, head: Head, out_dir: Path, renderer) -> Path:
+def capture(
+    rig: Rig, head: Head, out_dir: Path, renderer, scenario: Scenario | None = None
+) -> Path:
     """Render every camera and write images, cameras.json, rig.json, ground_truth.ply.
 
     Parameters
@@ -52,8 +55,10 @@ def capture(rig: Rig, head: Head, out_dir: Path, renderer) -> Path:
     out_dir : Path
         Missing or empty folder; parents are created.
     renderer
-        Object with ``background_rgb``, ``set_scene(meshes)`` and
+        Object with ``background_rgb``, ``set_scene(meshes, scenario)`` and
         ``render(cam) -> (H, W, 3) uint8``.
+    scenario : Scenario or None, optional
+        Room rendered around the head, never in the ground truth (default None).
 
     Returns
     -------
@@ -66,7 +71,7 @@ def capture(rig: Rig, head: Head, out_dir: Path, renderer) -> Path:
     tmp = Path(tempfile.mkdtemp(prefix=f".{out_dir.name}.", dir=out_dir.parent))
     try:
         (tmp / "images").mkdir()
-        renderer.set_scene([head, *head.extras])
+        renderer.set_scene([head, *head.extras], scenario)
         cameras = []
         for cam in rig.cameras:
             image = renderer.render(cam)
@@ -93,6 +98,7 @@ def capture(rig: Rig, head: Head, out_dir: Path, renderer) -> Path:
             "created": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "version": version("heaicare-capture-sim"),
             "mesh_source": head.source,
+            "scenario_source": scenario.source if scenario else None,
             "cameras": cameras,
         }
         (tmp / "cameras.json").write_text(json.dumps(meta, indent=2) + "\n")

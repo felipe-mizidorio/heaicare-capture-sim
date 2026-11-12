@@ -11,12 +11,12 @@ In scope now:
 - One trigger captures every camera simultaneously, from a GUI button or a CLI command. Both use the same engine, so the same rig gives identical output.
 - A synthetic neonatal head with procedural skin texture, or a head mesh from a file (any OBJ via `import-mesh`, e.g. from MakeHuman, see below).
 - Ideal pinhole cameras defined by datasheet values (resolution, focal length in mm, pixel size in µm).
-- Head alone on a neutral background, fixed neutral lighting.
+- Head on a neutral background, or inside a scenario (a room model such as `scenarios/greybox/`, see below), optionally with a full rendered body. Fixed lighting: the head is unlit, the scenario shaded by one fixed light.
 - Output per capture: images, camera parameters (OpenCV convention), ground-truth mesh.
 
 Out of scope: running the reconstruction pipeline, and scoring results.
 
-Planned later: per-camera depth maps and vault masks; lens distortion, noise and blur; configurable lights; a mattress under the head.
+Planned later: per-camera depth maps and vault masks; lens distortion, noise and blur; configurable lights; scenario textures.
 
 ## Install
 
@@ -32,7 +32,7 @@ heaicare-capture-sim preset ring --n 8 --radius-mm 300 --height-mm 100 -o rig.js
 heaicare-capture-sim preset dome --n 12 --radius-mm 300 --min-elevation-deg 20 -o rig.json
 
 # Capture every camera in the rig
-heaicare-capture-sim capture --rig rig.json --out captures/run01 [--mesh baby_head]
+heaicare-capture-sim capture --rig rig.json --out captures/run01 [--mesh baby_body] [--scenario greybox]
 
 # Interactive GUI (opens in the browser at http://localhost:8080)
 heaicare-capture-sim gui [--rig rig.json] [--port 8080]
@@ -68,6 +68,7 @@ heaicare-capture-sim import-mesh baby.obj -o meshes/baby/baby.obj --preset makeh
 | `--front` | Source axis the face points along (perpendicular to `--up`) | `+y` |
 | `--neck-cut` | Drop every triangle with a vertex more than this fraction of the height below the crown (for whole-body models; the neck is left open) | no cut |
 | `--head-length-mm` | Rescale uniformly so the head's front-to-back extent, nose included, is this | no rescale |
+| `--keep-body` | With `--neck-cut`: keep the skin below the cut as a rendered-only part (a body that occludes like a real one; never ground truth) | dropped |
 | `--preset makehuman` | `--units dm --up +y --front +z --neck-cut 0.25 --head-length-mm 120`; explicit options override it | — |
 
 The defaults change nothing but centring, so a mesh already in the world frame comes out as it went in, and a real scan keeps its true size. The head (ground truth) is the material with the most triangles; it is written as the first material, the other materials as extras. The head's bounding box is centred on the origin. Vertex colours are kept. The axes are never guessed: a wrong `--up` or `--front` puts the face in the wrong place, so check the result in the GUI.
@@ -82,9 +83,44 @@ MakeHuman cannot make a newborn (its youngest age is 1 year), so the preset take
 2. Export as **OBJ** in decimeters (the default).
 3. `heaicare-capture-sim import-mesh baby.obj -o meshes/baby/baby.obj --preset makehuman`, then pick it in the GUI's **Head** panel or pass `--mesh baby` to `capture`. Check the neck cut on your first export and adjust `--neck-cut` if it keeps neck or loses chin.
 
+`meshes/baby_body/` is the same export with `--keep-body`: the ground truth is still the head above the neck cut, and the rest of the body (scaled with the head, about 54 cm tall, feet at z = -470 mm) is rendered only. Its pose is whatever the MakeHuman export has (standing); for another pose, such as sitting, pick it in MakeHuman's **Pose/Animate → Pose** tab before exporting, then re-import.
+
+### Scenarios
+
+A scenario is a room model rendered around the head: it occludes and fills the background, but is never part of `ground_truth.ply`. Each scenario is a folder under `scenarios/` with the model file and a `scenario.json`:
+
+```
+scenarios/
+└── greybox/
+    ├── Greybox.fbx
+    └── scenario.json
+```
+
+```json
+{
+  "file": "Greybox.fbx",
+  "units": "cm",
+  "up": "+y",
+  "front": "+z",
+  "head": [-80.0, 137.04, -50.0]
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `file` | Model file next to `scenario.json`; anything Open3D reads (FBX, OBJ, glTF, PLY...) |
+| `units` | Model units as Open3D reads them: `m`, `dm`, `cm`, `mm`, `inch` |
+| `up`, `front` | Model axes that become world +z (crown) and +y (face), as in `import-mesh` |
+| `head` | Model point, in model units, where the head centre (world origin) goes |
+
+The head stays at the world origin, so rigs and ground truth are unchanged; the room is moved around it. Only material base colours are used (textures are ignored). `greybox` is a 4 × 4 m room with six floor-to-ceiling poles around a 90 cm high box; `head` puts `meshes/baby_body` standing on the box, facing the room's +z. With another head or pose, adjust `head[1]` (height) so the body rests on the box; other heads float above it.
+
+`capture --scenario` takes `none` (the default), a folder name (`greybox`), or a `scenario.json` path.
+
 ### GUI
 
 - **Head:** a dropdown of `synthetic` and every `meshes/<head>/*.obj` (the folder is created on start if missing). Picking one swaps the head in the 3D view, preview and captures. **Reload** re-reads the head on screen from disk (so edits to its file show up) and rescans the folder for new files. Meshes there must already be in the world frame (convert other meshes with `import-mesh` first). A mesh that fails to load shows an error and the current head stays.
+- **Scenario:** a dropdown of `none` and every `scenarios/<name>/scenario.json`. Picking one draws the room in the 3D view and adds it to the preview and captures. **Reload scenario** re-reads it from disk (e.g. after editing `scenario.json` or re-exporting the model) and rescans the folder.
 - **3D view:** the textured head with all its parts (eyes, eyebrows, eyelashes, tongue), plus one frustum per camera. The browser lights it for viewing only; captures and the preview use the Open3D renderer. The selected camera is highlighted; clicking a frustum selects it.
 - **Camera panel:** a camera dropdown, then fields for the selected camera (eye, target, up, focal length, pixel size, resolution), with Add, Duplicate and Remove.
 - **Presets:** ring and dome with the same layout parameters as the CLI; the generated cameras reuse the selected camera's resolution, lens and target. Applying a preset replaces the camera list.
@@ -136,6 +172,7 @@ A rig is always an explicit list of cameras; presets just generate this list.
   "created": "2026-11-06T15:30:00Z",
   "version": "0.1.0",
   "mesh_source": "synthetic",
+  "scenario_source": null,
   "cameras": [
     {
       "name": "cam00",
@@ -149,7 +186,7 @@ A rig is always an explicit list of cameras; presets just generate this list.
 }
 ```
 
-`K`, `R` and `t_mm` use the OpenCV convention. `R` and `t_mm` map world to camera (`x_cam = R @ x_world + t`). The camera axes are x right, y down, z forward.
+`scenario_source` is the `scenario.json` path, or `null` without a scenario. `K`, `R` and `t_mm` use the OpenCV convention. `R` and `t_mm` map world to camera (`x_cam = R @ x_world + t`). The camera axes are x right, y down, z forward.
 
 ## Errors
 
@@ -158,6 +195,7 @@ A rig is always an explicit list of cameras; presets just generate this list.
 | Invalid rig (schema or geometry) | Every bad field is listed. The CLI exits with code 2; the GUI shows the message and keeps running. |
 | `--out` exists and isn't empty | The CLI refuses and exits with code 2. |
 | Unreadable mesh | Exit code 2 with the path and the reason. |
-| `import-mesh`: bad option (e.g. `--up` parallel to `--front`), output not `.obj`, no head above the neck cut | Exit code 2 with the reason. |
+| Unreadable or invalid scenario (`scenario.json` field, missing model) | Exit code 2 with the reason; the GUI shows it and keeps the scenario on screen. |
+| `import-mesh`: bad option (e.g. `--up` parallel to `--front`), output not `.obj`, no head above the neck cut, `--keep-body` without a cut | Exit code 2 with the reason. |
 | Capture fails partway | No partial folder is left. Output is written to a temporary folder next to the target and renamed only when complete. |
-| A camera sees none of the head | A warning; the image is still captured. That's a valid (bad) rig. |
+| A camera sees none of the head | A warning (without a scenario); the image is still captured. That's a valid (bad) rig. |

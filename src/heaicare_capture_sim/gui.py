@@ -37,6 +37,7 @@ from heaicare_capture_sim.rig import (
     ring,
     save_rig,
 )
+from heaicare_capture_sim.scenario import NONE, SCENARIO_DIR, Scenario, load_scenario
 
 _log = logging.getLogger(__name__)
 CAPTURE_ROOT = Path("captures")
@@ -100,6 +101,25 @@ def _mesh_options(mesh_dir: Path, current: str) -> list[str]:
         *paths,
         *([current] if current not in (SYNTHETIC, *paths) else []),
     ]
+
+
+def _scenario_options(scenario_dir: Path, current: str) -> list[str]:
+    """Scenario choices: none, each ``scenario_dir/<name>/scenario.json``, and ``current``.
+
+    Parameters
+    ----------
+    scenario_dir : Path
+        Folder with one subfolder per scenario.
+    current : str
+        Source of the scenario on screen (kept even if it lives elsewhere).
+
+    Returns
+    -------
+    list of str
+        "none" first, then scenario.json paths sorted by name.
+    """
+    paths = sorted(str(p) for p in Path(scenario_dir).glob("*/scenario.json"))
+    return [NONE, *paths, *([current] if current not in (NONE, *paths) else [])]
 
 
 def _first_head() -> Head:
@@ -178,6 +198,8 @@ class _Gui:
         self.selected, self.syncing, self.preview_gen = 0, False, 0
         self.frustums: list = []
         self.head_parts: list = []
+        self.scenario: Scenario | None = None
+        self.scenario_parts: list = []
         self._lock = (
             threading.RLock()
         )  # reentrant: server-side .value sets re-enter handlers
@@ -201,6 +223,14 @@ class _Gui:
             )
             self.mesh_dropdown.on_update(self._on_mesh)
             gui.add_button("Reload").on_click(self._rescan)
+        with gui.add_folder("Scenario"):
+            self.scenario_dropdown = gui.add_dropdown(
+                "Scene",
+                options=_scenario_options(SCENARIO_DIR, NONE),
+                initial_value=NONE,
+            )
+            self.scenario_dropdown.on_update(self._on_scenario)
+            gui.add_button("Reload scenario").on_click(self._rescan_scenario)
         with gui.add_folder("Rig file"):
             self.rig_path = gui.add_text("Path", initial_value="rig.json")
             gui.add_button("Load rig").on_click(self._load)
@@ -279,6 +309,21 @@ class _Gui:
             for i, part in enumerate((self.head, *self.head.extras))
         ]
 
+    def _draw_scenario(self) -> None:
+        for handle in self.scenario_parts:
+            handle.remove()
+        parts = self.scenario.parts if self.scenario else ()
+        self.scenario_parts = [
+            self.server.scene.add_mesh_simple(
+                f"/scenario/part{i}",
+                vertices=np.asarray(mesh.vertices),
+                faces=np.asarray(mesh.triangles),
+                color=tuple(int(255 * c) for c in rgb),
+                flat_shading=True,
+            )
+            for i, (mesh, rgb) in enumerate(parts)
+        ]
+
     def _draw_frustums(self) -> None:
         for handle in self.frustums:
             handle.remove()
@@ -299,11 +344,12 @@ class _Gui:
     def _refresh_preview(self) -> None:
         self.preview_gen += 1
         gen, cam, head = self.preview_gen, self.rig.cameras[self.selected], self.head
+        scenario = self.scenario
 
         def job(r: Renderer) -> np.ndarray | None:
             if gen != self.preview_gen:  # a newer edit superseded this one
                 return None
-            r.set_scene([head, *head.extras])
+            r.set_scene([head, *head.extras], scenario)
             return r.render(cam)
 
         self.worker.submit(job).add_done_callback(self._show_preview)
@@ -459,6 +505,47 @@ class _Gui:
             return
         self._show_head(head)
 
+    def _show_scenario(self, scenario: Scenario | None) -> None:
+        _log.info("scenario: %s", scenario.source if scenario else NONE)
+        self.scenario = scenario
+        self._draw_scenario()
+        self._refresh_preview()
+
+    def _sync_scenario_dropdown(self) -> None:
+        current = self.scenario.source if self.scenario else NONE
+        self.syncing = True
+        try:
+            self.scenario_dropdown.options = _scenario_options(SCENARIO_DIR, current)
+            self.scenario_dropdown.value = current
+        finally:
+            self.syncing = False
+
+    @_locked
+    def _on_scenario(self, event) -> None:
+        choice = self.scenario_dropdown.value
+        current = self.scenario.source if self.scenario else NONE
+        if self.syncing or choice == current:
+            return
+        try:
+            scenario = load_scenario(choice)
+        except (ValueError, OSError) as exc:
+            _notify(event, "Scenario load failed", str(exc))
+            self._sync_scenario_dropdown()  # back to the scenario on screen
+            return
+        self._show_scenario(scenario)
+
+    @_locked
+    def _rescan_scenario(self, event) -> None:
+        """Reload the scenario on screen from disk, then rescan the scenario folder."""
+        if self.scenario is not None:
+            try:
+                self._show_scenario(load_scenario(Path(self.scenario.source)))
+            except (ValueError, OSError) as exc:
+                _notify(
+                    event, "Reload failed; keeping the scenario on screen", str(exc)
+                )
+        self._sync_scenario_dropdown()
+
     @_locked
     def _load(self, event) -> None:
         try:
@@ -479,7 +566,7 @@ class _Gui:
 
     @_locked
     def _capture(self, event) -> None:
-        rig, head = self.rig, self.head
+        rig, head, scenario = self.rig, self.head, self.scenario
         try:
             out = new_capture_dir(CAPTURE_ROOT)
         except OSError as exc:
@@ -501,4 +588,6 @@ class _Gui:
                     out.rmdir()  # no partial folder; no-op if it holds anything
                 _notify(event, "Capture failed", str(exc))
 
-        self.worker.submit(lambda r: capture(rig, head, out, r)).add_done_callback(done)
+        self.worker.submit(
+            lambda r: capture(rig, head, out, r, scenario)
+        ).add_done_callback(done)

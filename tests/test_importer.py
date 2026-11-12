@@ -88,6 +88,26 @@ def test_makehuman_preset_frame_scale_and_cut(tmp_path):
     assert head.source == str(tmp_path / "head.obj")
 
 
+def test_keep_body_renders_torso_but_ground_truth_is_unchanged(tmp_path):
+    _fake_makehuman(tmp_path / "mh.obj")
+    cut = import_mesh(tmp_path / "mh.obj", tmp_path / "cut.obj", **MAKEHUMAN)
+    body = import_mesh(
+        tmp_path / "mh.obj", tmp_path / "body.obj", **MAKEHUMAN, keep_body=True
+    )
+    np.testing.assert_allclose(
+        np.asarray(body.mesh.vertices), np.asarray(cut.mesh.vertices), atol=1e-4
+    )
+    *_, torso = body.extras
+    assert len(body.extras) == len(cut.extras) + 1 and torso.texture is not None
+    k = 120.0 / 1.5  # mm per dm-of-fake after scaling
+    # The torso is the fake's 5 dm box, from its feet up to the neck cut.
+    lo, hi = torso.mesh.get_min_bound(), torso.mesh.get_max_bound()
+    assert hi[2] - lo[2] == pytest.approx(5.0 * k, rel=1e-3)
+    assert hi[2] <= cut.mesh.get_min_bound()[2] + 1e-3
+    with pytest.raises(ValueError, match="neck_cut"):
+        import_mesh(tmp_path / "mh.obj", tmp_path / "x.obj", keep_body=True)
+
+
 def test_generic_scan_is_only_reoriented_and_centred(tmp_path):
     # A head scan in mm with up = +x and the face toward -z, off-centre. The
     # nose is shifted toward source -y, which is world +x (right = front x up).
