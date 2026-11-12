@@ -4,7 +4,15 @@ import numpy as np
 import pytest
 from pydantic import ValidationError
 
-from heaicare_capture_sim.rig import Camera, Rig, dome, load_rig, ring, save_rig
+from heaicare_capture_sim.rig import (
+    Camera,
+    Rig,
+    dome,
+    load_rig,
+    move_rig,
+    ring,
+    save_rig,
+)
 
 
 def cam(**kw) -> Camera:
@@ -93,3 +101,17 @@ def test_bad_preset_arguments(bad):
     args = {"n": 4, "radius_mm": 300.0, "min_elevation_deg": 20.0, **bad}
     with pytest.raises(ValueError):
         dome(**args)
+
+
+def test_move_rig_turns_about_targets_then_shifts():
+    rig = ring(4, 300.0, 100.0, target_mm=(50.0, 0.0, 0.0))
+    moved = move_rig(rig, (0.0, 0.0, 10.0), 90.0)
+    first = moved.cameras[0]  # was at +x of the target, now at +y
+    np.testing.assert_allclose(first.eye_mm, (50.0, 300.0, 110.0), atol=1e-9)
+    np.testing.assert_allclose(first.target_mm, (50.0, 0.0, 10.0), atol=1e-9)
+    for a, b in zip(rig.cameras, moved.cameras, strict=True):
+        assert (a.name, a.focal_length_mm) == (b.name, b.focal_length_mm)
+        # Rigid: every camera sees the moved world exactly as before.
+        p = np.array([[60.0, -20.0, 30.0]])
+        q = (p - (50.0, 0.0, 0.0)) @ [[0, 1, 0], [-1, 0, 0], [0, 0, 1]] + (50, 0, 10)
+        np.testing.assert_allclose(a.project(p), b.project(q), atol=1e-9)

@@ -127,6 +127,49 @@ def save_rig(rig: Rig, path: Path) -> None:
     Path(path).write_text(rig.model_dump_json(indent=2) + "\n")
 
 
+def move_rig(rig: Rig, shift_mm: Vec3, turn_deg: float = 0.0) -> Rig:
+    """Move every camera together: a turn about z, then a shift.
+
+    The turn is about the vertical line through the mean of the targets, so a
+    ring or dome spins around the point it looks at.
+
+    Parameters
+    ----------
+    rig : Rig
+        Cameras to move; unchanged.
+    shift_mm : Vec3
+        Translation applied to every eye and target, world mm.
+    turn_deg : float
+        Counter-clockwise turn seen from above (+z), degrees.
+
+    Returns
+    -------
+    Rig
+        Moved cameras; eye, target and up move rigidly, names and lenses kept.
+    """
+    a = math.radians(turn_deg)
+    rot = np.array(
+        [[math.cos(a), -math.sin(a), 0.0], [math.sin(a), math.cos(a), 0.0], [0, 0, 1]]
+    )
+    pivot = np.mean([c.target_mm for c in rig.cameras], axis=0) * (1, 1, 0)
+
+    def move(p: Vec3) -> Vec3:
+        return tuple(float(v) for v in rot @ (np.asarray(p) - pivot) + pivot + shift_mm)
+
+    cameras = [
+        Camera.model_validate(
+            c.model_dump()
+            | {
+                "eye_mm": move(c.eye_mm),
+                "target_mm": move(c.target_mm),
+                "up": tuple(float(v) for v in rot @ c.up),
+            }
+        )
+        for c in rig.cameras
+    ]
+    return Rig(cameras=cameras)
+
+
 def ring(
     n: int,
     radius_mm: float,

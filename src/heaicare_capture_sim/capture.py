@@ -99,6 +99,7 @@ def capture(
             "version": version("heaicare-capture-sim"),
             "mesh_source": head.source,
             "scenario_source": scenario.source if scenario else None,
+            "scenario": scenario.spec.model_dump(mode="json") if scenario else None,
             "cameras": cameras,
         }
         (tmp / "cameras.json").write_text(json.dumps(meta, indent=2) + "\n")

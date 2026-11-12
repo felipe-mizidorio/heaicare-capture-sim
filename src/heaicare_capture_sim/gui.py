@@ -34,15 +34,23 @@ from heaicare_capture_sim.rig import (
     Rig,
     dome,
     load_rig,
+    move_rig,
     ring,
     save_rig,
 )
-from heaicare_capture_sim.scenario import NONE, SCENARIO_DIR, Scenario, load_scenario
+from heaicare_capture_sim.scenario import (
+    NONE,
+    SCENARIO_DIR,
+    Scenario,
+    load_scenario,
+    save_scenario,
+)
 
 _log = logging.getLogger(__name__)
 CAPTURE_ROOT = Path("captures")
 PREVIEW_MAX_WIDTH = 480
 _SKIN_RGB = (222, 171, 148)
+_GIZMO_LIMITS = ((-10000.0, 10000.0),) * 3  # mm; viser's default is +-1000
 
 
 def _to_trimesh(head: Head) -> trimesh.Trimesh:
@@ -200,6 +208,7 @@ class _Gui:
         self.head_parts: list = []
         self.scenario: Scenario | None = None
         self.scenario_parts: list = []
+        self.feet_z = 0.0
         self._lock = (
             threading.RLock()
         )  # reentrant: server-side .value sets re-enter handlers
@@ -213,7 +222,16 @@ class _Gui:
             (0.0, 0.0, 1.0),
         )
         cam.near, cam.far = 1.0, 10000.0
+        # The browser shows the room fixed. Head, frustums and their gizmos are
+        # drawn in the head frame under /baby, posed at the baby's place in the
+        # room; outputs stay head-centred (the renderer gets the room moved instead).
+        self.baby_frame = server.scene.add_frame("/baby", show_axes=False)
         self._draw_head()
+        # Move-only gizmos; nested ones report head-frame positions.
+        self.cam_gizmo = self._add_gizmo("/baby/camera_gizmo", 60.0, self._on_cam_gizmo)
+        self.rig_gizmo = self._add_gizmo("/baby/rig_gizmo", 120.0, self._on_rig_gizmo)
+        self.baby_gizmo = self._add_gizmo("/baby_gizmo", 200.0, self._on_baby_gizmo)
+        self.baby_gizmo.visible = False
         gui = server.gui
         with gui.add_folder("Head"):
             self.mesh_dropdown = gui.add_dropdown(
@@ -231,6 +249,13 @@ class _Gui:
             )
             self.scenario_dropdown.on_update(self._on_scenario)
             gui.add_button("Reload scenario").on_click(self._rescan_scenario)
+            self.baby_offset = gui.add_vector3(
+                "Baby offset (mm)", initial_value=(0.0, 0.0, 0.0), step=1.0
+            )
+            self.baby_yaw = gui.add_number("Baby yaw (°)", initial_value=0.0, step=0.1)
+            for handle in (self.baby_offset, self.baby_yaw):
+                handle.on_update(self._on_baby_edit)
+            gui.add_button("Save scenario").on_click(self._save_scenario)
         with gui.add_folder("Rig file"):
             self.rig_path = gui.add_text("Path", initial_value="rig.json")
             gui.add_button("Load rig").on_click(self._load)
@@ -267,6 +292,12 @@ class _Gui:
             gui.add_button("Add").on_click(self._add)
             gui.add_button("Duplicate").on_click(self._duplicate)
             gui.add_button("Remove").on_click(self._remove)
+        with gui.add_folder("Move all cameras"):
+            self.rig_shift = gui.add_vector3(
+                "Shift (mm)", initial_value=(0.0, 0.0, 0.0), step=1.0
+            )
+            self.rig_turn = gui.add_number("Turn (°)", initial_value=0.0, step=0.1)
+            gui.add_button("Apply move").on_click(self._apply_move)
         with gui.add_folder("Ring preset"):
             self.ring_n = gui.add_number("Cameras", initial_value=8, min=1, step=1)
             self.ring_r = gui.add_number("Radius (mm)", initial_value=300.0, min=1.0)
@@ -296,27 +327,51 @@ class _Gui:
             self.dropdown.value = cam.name
             for key, handle in self.fields.items():
                 handle.value = getattr(cam, key)
+            # Not while the user drags it: an echo of an older pose would make it jump.
+            if not np.allclose(self.cam_gizmo.position, cam.eye_mm):
+                self.cam_gizmo.position = cam.eye_mm
+            centre = self._rig_centre()
+            if not np.allclose(self.rig_gizmo.position, centre):
+                self.rig_gizmo.position = centre
         finally:
             self.syncing = False
         self._draw_frustums()
         self._refresh_preview()
 
+    def _add_gizmo(self, name: str, scale: float, handler: Callable):
+        gizmo = self.server.scene.add_transform_controls(
+            name,
+            scale=scale,
+            disable_rotations=True,  # turns are typed in the yaw / turn fields
+            translation_limits=_GIZMO_LIMITS,
+        )
+        gizmo.on_update(handler)
+        return gizmo
+
+    def _rig_centre(self) -> np.ndarray:
+        return np.mean([c.eye_mm for c in self.rig.cameras], axis=0)
+
     def _draw_head(self) -> None:
         for handle in self.head_parts:
             handle.remove()
+        parts = (self.head, *self.head.extras)
         self.head_parts = [
-            self.server.scene.add_mesh_trimesh(f"/head/part{i}", _to_trimesh(part))
-            for i, part in enumerate((self.head, *self.head.extras))
+            self.server.scene.add_mesh_trimesh(f"/baby/head/part{i}", _to_trimesh(part))
+            for i, part in enumerate(parts)
         ]
+        # The baby's gizmo sits at its lowest point (the feet, for a body).
+        self.feet_z = min(float(np.asarray(p.mesh.vertices)[:, 2].min()) for p in parts)
 
     def _draw_scenario(self) -> None:
         for handle in self.scenario_parts:
             handle.remove()
         parts = self.scenario.parts if self.scenario else ()
+        # Parts are moved around the head; the browser draws them in the room frame.
+        pose = self.scenario.spec.baby_pose() if self.scenario else np.eye(4)
         self.scenario_parts = [
             self.server.scene.add_mesh_simple(
                 f"/scenario/part{i}",
-                vertices=np.asarray(mesh.vertices),
+                vertices=np.asarray(mesh.vertices) @ pose[:3, :3].T + pose[:3, 3],
                 faces=np.asarray(mesh.triangles),
                 color=tuple(int(255 * c) for c in rgb),
                 flat_shading=True,
@@ -330,7 +385,7 @@ class _Gui:
         self.frustums = []
         for i, cam in enumerate(self.rig.cameras):
             handle = self.server.scene.add_camera_frustum(
-                f"/cameras/{cam.name}",
+                f"/baby/cameras/{cam.name}",
                 fov=2 * math.atan(cam.height / 2 / cam.focal_px),
                 aspect=cam.width / cam.height,
                 scale=20.0,
@@ -480,6 +535,7 @@ class _Gui:
         _log.info("head: %s", head.source)
         self.head = head
         self._draw_head()
+        self._sync_baby()  # the gizmo follows the new feet
         self._refresh_preview()
 
     @_locked
@@ -509,7 +565,97 @@ class _Gui:
         _log.info("scenario: %s", scenario.source if scenario else NONE)
         self.scenario = scenario
         self._draw_scenario()
+        self._sync_baby()
         self._refresh_preview()
+
+    def _sync_baby(self, move_gizmo: bool = True) -> None:
+        """Baby fields, /baby frame and baby gizmo <- ``self.scenario``."""
+        spec = self.scenario.spec if self.scenario else None
+        offset = spec.baby_offset_mm if spec else (0.0, 0.0, 0.0)
+        yaw = spec.baby_yaw_deg if spec else 0.0
+        half = math.radians(yaw) / 2
+        self.syncing = True
+        try:
+            self.baby_offset.value, self.baby_yaw.value = offset, yaw
+            self.baby_frame.position = offset
+            self.baby_frame.wxyz = (math.cos(half), 0.0, 0.0, math.sin(half))
+            self.baby_gizmo.visible = spec is not None  # no room, nothing to move in
+            if move_gizmo:
+                self.baby_gizmo.position = np.add(offset, (0.0, 0.0, self.feet_z))
+        finally:
+            self.syncing = False
+
+    def _move_baby(self, offset_mm, yaw_deg: float, event, from_gizmo: bool) -> None:
+        if self.syncing:
+            return
+        if self.scenario is None:
+            _notify(event, "No scenario", "Pick a scenario to move the baby in.")
+        else:
+            try:
+                self.scenario = self.scenario.with_baby(
+                    tuple(float(v) for v in offset_mm), float(yaw_deg)
+                )
+            except ValueError as exc:
+                _notify(event, "Invalid baby pose", str(exc))
+        self._sync_baby(move_gizmo=not from_gizmo)
+        self._refresh_preview()
+
+    @_locked
+    def _on_baby_edit(self, event) -> None:
+        self._move_baby(self.baby_offset.value, self.baby_yaw.value, event, False)
+
+    @_locked
+    def _on_baby_gizmo(self, event) -> None:
+        # Read the handle, not the event: thread-pool callbacks may run out of order.
+        offset = np.subtract(self.baby_gizmo.position, (0.0, 0.0, self.feet_z))
+        yaw = self.scenario.spec.baby_yaw_deg if self.scenario else 0.0
+        self._move_baby(offset, yaw, event, True)
+
+    @_locked
+    def _save_scenario(self, event) -> None:
+        if self.scenario is None:
+            _notify(event, "Nothing to save", "No scenario is loaded.")
+            return
+        try:
+            save_scenario(self.scenario)
+        except OSError as exc:
+            _notify(event, "Save failed", str(exc))
+            return
+        _notify(event, "Saved", self.scenario.source)
+
+    @_locked
+    def _on_cam_gizmo(self, event) -> None:
+        if self.syncing:
+            return
+        cam = self.rig.cameras[self.selected]
+        eye = tuple(float(v) for v in self.cam_gizmo.position)  # latest, see above
+        try:
+            cam = Camera.model_validate(cam.model_dump() | {"eye_mm": eye})
+        except ValidationError as exc:
+            _notify(event, "Invalid camera", str(exc))
+            self._refresh()  # gizmo back to the last valid eye
+            return
+        cameras = list(self.rig.cameras)
+        cameras[self.selected] = cam
+        self._set_rig(cameras, self.selected, event)
+
+    def _move_rig(self, shift_mm, turn_deg: float, event) -> None:
+        try:
+            rig = move_rig(self.rig, tuple(float(v) for v in shift_mm), float(turn_deg))
+        except ValueError as exc:
+            _notify(event, "Invalid move", str(exc))
+            self._refresh()  # rig gizmo back to the cameras
+            return
+        self._set_rig(rig.cameras, self.selected, event)
+
+    @_locked
+    def _on_rig_gizmo(self, event) -> None:
+        if not self.syncing:  # the gizmo sits at the eyes' mean; a drag shifts it
+            self._move_rig(self.rig_gizmo.position - self._rig_centre(), 0.0, event)
+
+    @_locked
+    def _apply_move(self, event) -> None:
+        self._move_rig(self.rig_shift.value, self.rig_turn.value, event)
 
     def _sync_scenario_dropdown(self) -> None:
         current = self.scenario.source if self.scenario else NONE
