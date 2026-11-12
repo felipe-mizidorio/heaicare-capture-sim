@@ -20,6 +20,8 @@ from heaicare_capture_sim.scenario import Scenario
 
 _log = logging.getLogger(__name__)
 
+CAPTURE_ROOT = Path("captures")  # timestamped GUI and API captures go here
+
 
 def require_empty_dir(path: Path) -> None:
     """Raise FileExistsError if ``path`` exists and is not an empty directory."""

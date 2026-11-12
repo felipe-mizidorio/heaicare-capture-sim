@@ -18,7 +18,7 @@ import viser.transforms as vtf
 from PIL import Image
 from pydantic import ValidationError
 
-from heaicare_capture_sim.capture import capture, new_capture_dir
+from heaicare_capture_sim.capture import CAPTURE_ROOT, capture, new_capture_dir
 from heaicare_capture_sim.head import (
     MESH_DIR,
     SYNTHETIC,
@@ -47,7 +47,6 @@ from heaicare_capture_sim.scenario import (
 )
 
 _log = logging.getLogger(__name__)
-CAPTURE_ROOT = Path("captures")
 PREVIEW_MAX_WIDTH = 480
 _SKIN_RGB = (222, 171, 148)
 _GIZMO_LIMITS = ((-10000.0, 10000.0),) * 3  # mm; viser's default is +-1000
