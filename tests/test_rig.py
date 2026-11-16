@@ -115,3 +115,47 @@ def test_move_rig_turns_about_targets_then_shifts():
         p = np.array([[60.0, -20.0, 30.0]])
         q = (p - (50.0, 0.0, 0.0)) @ [[0, 1, 0], [-1, 0, 0], [0, 0, 1]] + (50, 0, 10)
         np.testing.assert_allclose(a.project(p), b.project(q), atol=1e-9)
+
+
+def test_project_applies_opencv_distortion():
+    k1, k2, p1, p2, k3 = dist = (-0.2, 0.05, 0.001, -0.002, 0.01)
+    c = cam(dist=dist)
+    point = np.array([[30.0, 0.0, 20.0]])  # camera frame (x, y, z) = (30, -20, 300)
+    x, y = 30.0 / 300.0, -20.0 / 300.0
+    r2 = x * x + y * y
+    radial = 1 + k1 * r2 + k2 * r2**2 + k3 * r2**3
+    xd = x * radial + 2 * p1 * x * y + p2 * (r2 + 2 * x * x)
+    yd = y * radial + p1 * (r2 + 2 * y * y) + 2 * p2 * x * y
+    k = c.K
+    expected = [k[0, 0] * xd + k[0, 2], k[1, 1] * yd + k[1, 2]]
+    np.testing.assert_allclose(c.project(point)[0], expected, atol=1e-9)
+
+
+def test_ideal_pixels_invert_the_lens():
+    c = cam(width=320, height=240, dist=(-0.3, 0.1, 0.002, -0.001, 0.0))
+    ideal = c.ideal_pixels()
+    assert ideal.shape == (240, 320, 2) and not ideal.flags.writeable
+    # Rays through the ideal positions land back on the pixel centres.
+    xy = (ideal.reshape(-1, 2) - c.K[:2, 2]) / c.focal_px
+    rays_cam = np.c_[xy, np.ones(len(xy))] * 300.0
+    world = (rays_cam - c.t_mm) @ c.R
+    v, u = np.mgrid[0:240, 0:320]
+    np.testing.assert_allclose(c.project(world), np.c_[u.ravel(), v.ravel()], atol=1e-6)
+
+
+def test_folding_distortion_rejected():
+    with pytest.raises(ValidationError, match="not invertible"):
+        cam(dist=(-1.5, 0.0, 0.0, 0.0, 0.0))
+
+
+@pytest.mark.parametrize(
+    "bad", [{"blur_px": -1.0}, {"gain": 0.0}, {"noise_std": -0.1}, {"dist": (0.1,)}]
+)
+def test_bad_sensor_values_rejected(bad):
+    with pytest.raises(ValidationError):
+        cam(**bad)
+
+
+def test_old_rig_files_load_as_ideal_cameras():
+    c = Camera.model_validate({"name": "c", "eye_mm": (0.0, -300.0, 0.0)})
+    assert c.dist == (0.0,) * 5 and (c.blur_px, c.gain, c.noise_std) == (0, 1, 0)

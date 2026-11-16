@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import functools
 import math
 from pathlib import Path
 from typing import Any, Literal
 
+import cv2
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -13,6 +15,9 @@ Vec3 = tuple[float, float, float]
 MAX_WIDTH, MAX_HEIGHT = 4096, 3072
 _PARALLEL_TOL = 1e-6
 _GOLDEN_ANGLE = math.pi * (3.0 - math.sqrt(5.0))
+_UNDISTORT_CRITERIA = (cv2.TERM_CRITERIA_COUNT | cv2.TERM_CRITERIA_EPS, 100, 1e-12)
+_ROUND_TRIP_TOL_PX = 1e-3
+_CHECK_STEP_PX = 8  # lens validation samples every 8th pixel (and the last row/column)
 
 
 def _unit(v: Any) -> np.ndarray:
@@ -28,6 +33,9 @@ class Camera(BaseModel):
 
     Lengths are millimetres in the world frame (z up). Square pixels, principal
     point at the image centre, OpenCV axes (x right, y down, z forward).
+    ``dist`` is OpenCV's (k1, k2, p1, p2, k3); ``blur_px``, ``gain`` and
+    ``noise_std`` are applied to the rendered image (see ``capture.apply_sensor``).
+    All four default to an ideal camera.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True, allow_inf_nan=False)
@@ -40,6 +48,10 @@ class Camera(BaseModel):
     eye_mm: Vec3
     target_mm: Vec3 = (0.0, 0.0, 0.0)
     up: Vec3 = (0.0, 0.0, 1.0)
+    dist: tuple[float, float, float, float, float] = (0.0, 0.0, 0.0, 0.0, 0.0)
+    blur_px: float = Field(default=0.0, ge=0)
+    gain: float = Field(default=1.0, gt=0)
+    noise_std: float = Field(default=0.0, ge=0)
 
     @model_validator(mode="after")
     def _check_pose(self) -> Camera:
@@ -52,6 +64,27 @@ class Camera(BaseModel):
             )
         return self
 
+    @model_validator(mode="after")
+    def _check_lens(self) -> Camera:
+        if not any(self.dist):
+            return self
+        grid = _pixel_grid(self.width, self.height, _CHECK_STEP_PX)
+        ideal = ideal_pixels(
+            self.width, self.height, self.focal_px, self.dist, _CHECK_STEP_PX
+        )
+        # Past the fold radius pixels have no preimage (round trip fails) or
+        # neighbours see the scene out of order.
+        folded = (np.diff(ideal[..., 0], axis=1) <= 0).any() or (
+            np.diff(ideal[..., 1], axis=0) <= 0
+        ).any()
+        error = np.abs(_distort(self.K, self.dist, ideal) - grid).max()
+        if folded or error > _ROUND_TRIP_TOL_PX:
+            raise ValueError(
+                f"camera {self.name!r}: distortion {self.dist} is not invertible "
+                "inside the image (too strong)"
+            )
+        return self
+
     @property
     def focal_px(self) -> float:
         """Focal length in pixels."""
@@ -60,14 +93,7 @@ class Camera(BaseModel):
     @property
     def K(self) -> np.ndarray:
         """OpenCV intrinsic matrix (3, 3)."""
-        f = self.focal_px
-        return np.array(
-            [
-                [f, 0.0, (self.width - 1) / 2],
-                [0.0, f, (self.height - 1) / 2],
-                [0.0, 0.0, 1.0],
-            ]
-        )
+        return _k(self.width, self.height, self.focal_px)
 
     @property
     def R(self) -> np.ndarray:
@@ -92,11 +118,75 @@ class Camera(BaseModel):
         Returns
         -------
         np.ndarray
-            Pixel coordinates (u, v), shape (N, 2), pixel-centre convention.
+            Pixel coordinates (u, v), shape (N, 2), pixel-centre convention,
+            lens distortion included.
         """
         cam = np.asarray(points_mm, dtype=float) @ self.R.T + self.t_mm
-        uvw = cam @ self.K.T
-        return uvw[:, :2] / uvw[:, 2:3]
+        uv, _ = cv2.projectPoints(cam, np.zeros(3), np.zeros(3), self.K, self.dist)
+        return uv.reshape(-1, 2)
+
+    def ideal_pixels(self) -> np.ndarray:
+        """Undistorted pinhole position of every pixel centre.
+
+        Returns
+        -------
+        np.ndarray
+            Shape (height, width, 2): (u, v) in the same ``K`` without distortion.
+            Read-only and cached per lens.
+        """
+        return ideal_pixels(self.width, self.height, self.focal_px, self.dist, 1)
+
+
+def _k(width: int, height: int, focal_px: float) -> np.ndarray:
+    return np.array(
+        [[focal_px, 0.0, (width - 1) / 2], [0.0, focal_px, (height - 1) / 2], [0, 0, 1]]
+    )
+
+
+@functools.lru_cache(maxsize=4)  # a 1920x1080 map is 33 MB
+def ideal_pixels(
+    width: int, height: int, focal_px: float, dist: tuple[float, ...], step: int
+) -> np.ndarray:
+    """Undistort pixel centres every ``step`` px (last row/column always included).
+
+    Parameters
+    ----------
+    width, height : int
+        Image size, px.
+    focal_px : float
+        Focal length, px.
+    dist : tuple of float
+        OpenCV (k1, k2, p1, p2, k3).
+    step : int
+        Sampling step, px.
+
+    Returns
+    -------
+    np.ndarray
+        Shape (rows, cols, 2), read-only.
+    """
+    grid = _pixel_grid(width, height, step)
+    k = _k(width, height, focal_px)
+    ideal = cv2.undistortPoints(
+        grid.reshape(-1, 1, 2), k, np.array(dist), P=k, criteria=_UNDISTORT_CRITERIA
+    ).reshape(grid.shape)
+    ideal.flags.writeable = False
+    return ideal
+
+
+def _pixel_grid(width: int, height: int, step: int) -> np.ndarray:
+    """Pixel centres every ``step`` px, last row/column included; shape (rows, cols, 2)."""
+    us = np.unique(np.r_[0:width:step, width - 1])
+    vs = np.unique(np.r_[0:height:step, height - 1])
+    return np.stack(np.meshgrid(us.astype(float), vs.astype(float)), axis=-1)
+
+
+def _distort(k: np.ndarray, dist: tuple[float, ...], ideal: np.ndarray) -> np.ndarray:
+    """Apply the lens to undistorted pixel positions (inverse of ``ideal_pixels``)."""
+    xy = (ideal.reshape(-1, 2) - k[:2, 2]) / k[0, 0]
+    rays = np.c_[xy, np.ones(len(xy))]
+    uv, _ = cv2.projectPoints(rays, np.zeros(3), np.zeros(3), k, np.array(dist))
+    return uv.reshape(ideal.shape)
 
 
 class Rig(BaseModel):

@@ -7,15 +7,17 @@ import json
 import logging
 import shutil
 import tempfile
+import zlib
 from datetime import UTC, datetime
 from importlib.metadata import version
 from pathlib import Path
 
+import cv2
 import numpy as np
 import open3d as o3d
 
 from heaicare_capture_sim.head import Head, write_ground_truth
-from heaicare_capture_sim.rig import Rig, save_rig
+from heaicare_capture_sim.rig import Camera, Rig, save_rig
 from heaicare_capture_sim.scenario import Scenario
 
 _log = logging.getLogger(__name__)
@@ -41,6 +43,35 @@ def new_capture_dir(root: Path) -> Path:
         except FileExistsError:
             continue
     raise AssertionError("unreachable")
+
+
+def apply_sensor(cam: Camera, image: np.ndarray) -> np.ndarray:
+    """Apply the camera's blur, gain and noise, in that order (optics, exposure, sensor).
+
+    Parameters
+    ----------
+    cam : Camera
+        Source of ``blur_px`` (Gaussian sigma, px), ``gain`` (multiplier) and
+        ``noise_std`` (Gaussian sigma, grey levels).
+    image : np.ndarray
+        Rendered RGB image, uint8.
+
+    Returns
+    -------
+    np.ndarray
+        uint8 image; ``image`` itself when all three are off. The noise is seeded
+        by the camera name, so a rig always gives the same images.
+    """
+    if cam.blur_px == 0 and cam.gain == 1 and cam.noise_std == 0:
+        return image
+    out = image.astype(np.float32)
+    if cam.blur_px > 0:
+        out = cv2.GaussianBlur(out, (0, 0), cam.blur_px)
+    out *= cam.gain
+    if cam.noise_std > 0:
+        rng = np.random.default_rng(zlib.crc32(cam.name.encode()))
+        out += rng.normal(0.0, cam.noise_std, out.shape)
+    return np.clip(np.rint(out), 0, 255).astype(np.uint8)
 
 
 def capture(
@@ -79,6 +110,7 @@ def capture(
             image = renderer.render(cam)
             if not (image != renderer.background_rgb).any():
                 _log.warning("camera %s sees no geometry", cam.name)
+            image = apply_sensor(cam, image)
             rel = f"images/{cam.name}.png"
             image_ok = o3d.io.write_image(
                 str(tmp / rel), o3d.geometry.Image(np.ascontiguousarray(image))
@@ -92,6 +124,7 @@ def capture(
                     "width": cam.width,
                     "height": cam.height,
                     "K": cam.K.tolist(),
+                    "dist": list(cam.dist),
                     "R": cam.R.tolist(),
                     "t_mm": cam.t_mm.tolist(),
                 }
