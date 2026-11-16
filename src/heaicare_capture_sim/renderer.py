@@ -6,6 +6,7 @@ import gc
 from collections.abc import Callable, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 
+import cv2
 import numpy as np
 import open3d as o3d
 from open3d.visualization import rendering
@@ -76,19 +77,36 @@ class Renderer:
             self._r.scene.add_geometry(f"mesh{i}", mesh, material)
 
     def render(self, cam: Camera) -> np.ndarray:
-        """Render one camera.
+        """Render one camera, lens distortion included (no blur, gain or noise).
 
         Returns
         -------
         np.ndarray
             RGB image, shape (cam.height, cam.width, 3), uint8.
         """
-        if cam.width > self.width or cam.height > self.height:
-            raise ValueError(
-                f"camera {cam.name!r} ({cam.width}x{cam.height}) is larger than the renderer "
-                f"({self.width}x{self.height})"
-            )
+        if not any(cam.dist):
+            return self._render_pinhole(cam, cam.K, cam.width, cam.height)
+        # Render the undistorted view of every output pixel, then resample it.
+        ideal = cam.ideal_pixels()
+        lo = np.floor(ideal.min(axis=(0, 1))).astype(int) - 1  # bilinear neighbours
+        hi = np.ceil(ideal.max(axis=(0, 1))).astype(int) + 1
         k = cam.K.copy()
+        k[:2, 2] -= lo  # ideal pixel lo becomes pixel 0 of the pinhole render
+        w, h = hi - lo + 1
+        pinhole = self._render_pinhole(cam, k, w, h)
+        maps = (ideal - lo).astype(np.float32)
+        return cv2.remap(pinhole, maps[..., 0], maps[..., 1], cv2.INTER_LINEAR)
+
+    def _render_pinhole(
+        self, cam: Camera, k: np.ndarray, width: int, height: int
+    ) -> np.ndarray:
+        """Render ``cam``'s pose through intrinsics ``k`` into a width x height image."""
+        if width > self.width or height > self.height:
+            raise ValueError(
+                f"camera {cam.name!r} needs a {width}x{height} render (distortion "
+                f"included), larger than the renderer ({self.width}x{self.height})"
+            )
+        k = k.copy()
         k[0, 2] += _PIXEL_CORNER_SHIFT
         k[1, 2] += _PIXEL_CORNER_SHIFT
         extrinsic = np.eye(4)
@@ -97,7 +115,7 @@ class Renderer:
         self._r.setup_camera(k, extrinsic, self.width, self.height)
         self._r.scene.camera.set_projection(k, NEAR_MM, FAR_MM, self.width, self.height)
         image = np.asarray(self._r.render_to_image())
-        return image[: cam.height, : cam.width, :3].copy()
+        return image[:height, :width, :3].copy()
 
 
 class RenderWorker[R]:

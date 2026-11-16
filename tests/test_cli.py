@@ -21,6 +21,18 @@ def test_preset_ring_and_dome(tmp_path):
                 "640",
                 "--height",
                 "480",
+                "--dist",
+                "-0.1",
+                "0.01",
+                "0",
+                "0",
+                "0",
+                "--blur-px",
+                "0.5",
+                "--gain",
+                "1.2",
+                "--noise-std",
+                "2",
                 "-o",
                 str(tmp_path / "r.json"),
             ]
@@ -29,6 +41,9 @@ def test_preset_ring_and_dome(tmp_path):
     )
     rig = load_rig(tmp_path / "r.json")
     assert len(rig.cameras) == 6 and rig.cameras[0].width == 640
+    c = rig.cameras[0]
+    assert c.dist == (-0.1, 0.01, 0.0, 0.0, 0.0)
+    assert (c.blur_px, c.gain, c.noise_std) == (0.5, 1.2, 2.0)
     assert (
         main(
             [

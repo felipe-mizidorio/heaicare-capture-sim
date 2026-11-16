@@ -8,6 +8,7 @@ dependencies = [
     "fastapi>=0.162.5",
     "numpy>=2.5.4",
     "open3d>=0.20.0",
+    "opencv-python-headless>=5.0.0.93",
     "pillow>=13.0.0",
     "pydantic>=2.14.3",
     "trimesh>=5.2.0",

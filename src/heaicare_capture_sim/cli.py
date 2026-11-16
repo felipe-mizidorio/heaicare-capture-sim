@@ -36,6 +36,10 @@ def _cmd_preset(args: argparse.Namespace) -> int:
         "height": args.height,
         "focal_length_mm": args.focal_length_mm,
         "pixel_size_um": args.pixel_size_um,
+        "dist": tuple(args.dist),
+        "blur_px": args.blur_px,
+        "gain": args.gain,
+        "noise_std": args.noise_std,
     }
     target = tuple(args.target_mm)
     if args.layout == "ring":
@@ -113,6 +117,19 @@ def _parser() -> argparse.ArgumentParser:
         lp.add_argument("--height", type=int, default=1080)
         lp.add_argument("--focal-length-mm", type=float, default=8.0)
         lp.add_argument("--pixel-size-um", type=float, default=3.45)
+        lp.add_argument(
+            "--dist",
+            type=float,
+            nargs=5,
+            default=(0.0,) * 5,
+            metavar=("K1", "K2", "P1", "P2", "K3"),
+            help="OpenCV lens distortion",
+        )
+        lp.add_argument("--blur-px", type=float, default=0.0, help="Gaussian sigma")
+        lp.add_argument("--gain", type=float, default=1.0, help="pixel multiplier")
+        lp.add_argument(
+            "--noise-std", type=float, default=0.0, help="Gaussian sigma, grey levels"
+        )
         lp.add_argument("-o", "--output", type=Path, required=True)
         lp.set_defaults(func=_cmd_preset)
 

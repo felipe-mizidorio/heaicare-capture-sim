@@ -109,3 +109,21 @@ def test_gizmos_move_camera_eye_and_room():
         np.testing.assert_allclose(g.baby_frame.position, (0.0, 0.0, 0.0))
     finally:
         server.stop()
+
+
+def test_lens_fields_edit_dist_and_presets_inherit_them():
+    server = viser.ViserServer(port=8124)
+    try:
+        g = _Gui(server, _NoRender(), make_synthetic_head(), ring(4, 300.0, 100.0))
+        dist = (-0.1, 0.02, 0.001, -0.002, 0.003)
+        for handle, value in zip(g.lens.values(), dist, strict=True):
+            handle.value = value  # server-side set fires _on_edit
+        g.fields["noise_std"].value = 3.0
+        cam = g.rig.cameras[0]
+        assert cam.dist == dist and cam.noise_std == 3.0
+        g.lens["k1"].value = -1.5  # folds the image: rejected, reverted
+        assert g.rig.cameras[0] == cam and g.lens["k1"].value == -0.1
+        g._apply_ring(None)
+        assert all(c.dist == cam.dist and c.noise_std == 3.0 for c in g.rig.cameras)
+    finally:
+        server.stop()

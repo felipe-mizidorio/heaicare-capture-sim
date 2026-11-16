@@ -18,7 +18,12 @@ import viser.transforms as vtf
 from PIL import Image
 from pydantic import ValidationError
 
-from heaicare_capture_sim.capture import CAPTURE_ROOT, capture, new_capture_dir
+from heaicare_capture_sim.capture import (
+    CAPTURE_ROOT,
+    apply_sensor,
+    capture,
+    new_capture_dir,
+)
 from heaicare_capture_sim.head import (
     MESH_DIR,
     SYNTHETIC,
@@ -286,7 +291,33 @@ class _Gui:
                 ),
                 "up": gui.add_vector3("Up", initial_value=(0.0, 0.0, 1.0), step=0.1),
             }
-            for handle in self.fields.values():
+            with gui.add_folder("Lens & sensor", expand_by_default=False):
+                # Slider + number box. Limits cover realistic lenses and sensors;
+                # values outside them still load from a rig file.
+                self.lens = {  # dist order: k1, k2, p1, p2, k3
+                    name: gui.add_slider(
+                        name, min=-lim, max=lim, step=step, initial_value=0.0
+                    )
+                    for name, lim, step in [
+                        ("k1", 1.0, 0.001),
+                        ("k2", 1.0, 0.001),
+                        ("p1", 0.05, 0.0001),
+                        ("p2", 0.05, 0.0001),
+                        ("k3", 1.0, 0.001),
+                    ]
+                }
+                self.fields |= {
+                    "blur_px": gui.add_slider(
+                        "Blur σ (px)", min=0.0, max=10.0, step=0.1, initial_value=0.0
+                    ),
+                    "gain": gui.add_slider(
+                        "Gain", min=0.05, max=4.0, step=0.05, initial_value=1.0
+                    ),
+                    "noise_std": gui.add_slider(
+                        "Noise σ (grey)", min=0.0, max=50.0, step=0.5, initial_value=0.0
+                    ),
+                }
+            for handle in [*self.fields.values(), *self.lens.values()]:
                 handle.on_update(self._on_edit)
             gui.add_button("Add").on_click(self._add)
             gui.add_button("Duplicate").on_click(self._duplicate)
@@ -326,6 +357,8 @@ class _Gui:
             self.dropdown.value = cam.name
             for key, handle in self.fields.items():
                 handle.value = getattr(cam, key)
+            for handle, value in zip(self.lens.values(), cam.dist, strict=True):
+                handle.value = value
             # Not while the user drags it: an echo of an older pose would make it jump.
             if not np.allclose(self.cam_gizmo.position, cam.eye_mm):
                 self.cam_gizmo.position = cam.eye_mm
@@ -404,7 +437,7 @@ class _Gui:
             if gen != self.preview_gen:  # a newer edit superseded this one
                 return None
             r.set_scene([head, *head.extras], scenario)
-            return r.render(cam)
+            return apply_sensor(cam, r.render(cam))
 
         self.worker.submit(job).add_done_callback(self._show_preview)
 
@@ -446,6 +479,7 @@ class _Gui:
             return
         values = {k: h.value for k, h in self.fields.items()}
         values["width"], values["height"] = int(values["width"]), int(values["height"])
+        values["dist"] = tuple(h.value for h in self.lens.values())
         try:
             cam = Camera.model_validate(values)
         except ValidationError as exc:
@@ -486,13 +520,19 @@ class _Gui:
     def _preset_fields(self) -> dict:
         """Camera settings that generated presets inherit from the selected camera."""
         cam = self.rig.cameras[self.selected]
-        return {
-            "target_mm": cam.target_mm,
-            "width": cam.width,
-            "height": cam.height,
-            "focal_length_mm": cam.focal_length_mm,
-            "pixel_size_um": cam.pixel_size_um,
-        }
+        return cam.model_dump(
+            include={
+                "target_mm",
+                "width",
+                "height",
+                "focal_length_mm",
+                "pixel_size_um",
+                "dist",
+                "blur_px",
+                "gain",
+                "noise_std",
+            }
+        )
 
     @_locked
     def _apply_ring(self, event) -> None:

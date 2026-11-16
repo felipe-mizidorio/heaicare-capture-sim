@@ -42,19 +42,41 @@ GATE_CAMERAS = [
 TOLERANCE_PX = (
     0.27  # measured max 0.163 px (crop camera) + ~0.1 margin; must stay < 0.5
 )
+# Close, wide cameras so the markers sit ~14 px from where a pinhole puts them.
+LENS_CAMERAS = [
+    Camera(
+        name=name,
+        width=640,
+        height=480,
+        focal_length_mm=2.0,
+        eye_mm=(0.0, -80.0, 0.0),
+        dist=dist,
+    )
+    for name, dist in [
+        ("barrel", (-0.3, 0.1, 0.0, 0.0, 0.0)),
+        ("pincushion_tangential", (0.25, -0.05, 0.004, -0.003, 0.0)),
+    ]
+]
+# 1 mm markers: the lens stretches a blob unevenly, biasing its centroid by
+# ~0.45 px at 2 mm. Measured max 0.197 px + ~0.1 margin.
+LENS_TOLERANCE_PX = 0.3
 
 
-def _marker(center, color) -> Head:
-    m = o3d.geometry.TriangleMesh.create_sphere(radius=2.0, resolution=40)
+def _marker(center, color, radius_mm: float = 2.0) -> Head:
+    m = o3d.geometry.TriangleMesh.create_sphere(radius=radius_mm, resolution=40)
     m.translate(center)
     m.paint_uniform_color(color)
     return Head(mesh=m, texture=None, source="marker")
 
 
-def _reprojection_errors(renderer, cam) -> np.ndarray:
-    renderer.set_scene([_marker(p, c) for p, c in zip(MARKERS, COLORS, strict=True)])
+def _reprojection_errors(
+    renderer, cam, radius_mm: float = 2.0, expected_cam: Camera | None = None
+) -> np.ndarray:
+    renderer.set_scene(
+        [_marker(p, c, radius_mm) for p, c in zip(MARKERS, COLORS, strict=True)]
+    )
     img = renderer.render(cam).astype(float)
-    expected = cam.project(MARKERS)
+    expected = (expected_cam or cam).project(MARKERS)
     errors = []
     for color, uv in zip(COLORS, expected, strict=True):
         mask = np.linalg.norm(img - np.multiply(color, 255), axis=2) < 10
@@ -69,6 +91,28 @@ def test_reprojection_gate(renderer, cam):
     errors = _reprojection_errors(renderer, cam)
     print(f"{cam.name}: max {errors.max():.3f} px, mean {errors.mean():.3f} px")
     assert errors.max() < TOLERANCE_PX
+
+
+@pytest.mark.parametrize("cam", LENS_CAMERAS, ids=lambda c: c.name)
+def test_distorted_reprojection_gate(renderer, cam):
+    errors = _reprojection_errors(renderer, cam, radius_mm=1.0)
+    print(f"{cam.name}: max {errors.max():.3f} px, mean {errors.mean():.3f} px")
+    assert errors.max() < LENS_TOLERANCE_PX
+    # The gate can tell: against the pinhole projection the markers are far off.
+    pinhole = cam.model_copy(update={"dist": (0.0,) * 5})
+    assert _reprojection_errors(renderer, cam, 1.0, pinhole).max() > 5.0
+
+
+def test_distortion_too_wide_for_renderer_is_rejected(renderer):
+    cam = Camera(
+        name="huge",
+        width=4000,
+        height=3000,
+        eye_mm=(0.0, -300.0, 0.0),
+        dist=(-0.05, 0.0, 0.0, 0.0, 0.0),
+    )
+    with pytest.raises(ValueError, match="larger than the renderer"):
+        renderer.render(cam)
 
 
 def test_gate_catches_missing_pixel_corner_shift(renderer, monkeypatch):
