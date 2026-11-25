@@ -10,13 +10,13 @@ In scope now:
 
 - One trigger captures every camera simultaneously, from a GUI button, a CLI command or an HTTP request. All use the same engine, so the same rig gives identical output.
 - A synthetic neonatal head with procedural skin texture, or a head mesh from a file (any OBJ via `import-mesh`, e.g. from MakeHuman, see below).
-- Ideal pinhole cameras defined by datasheet values (resolution, focal length in mm, pixel size in µm).
+- Pinhole cameras defined by datasheet values (resolution, focal length in mm, pixel size in µm), with optional per-camera lens distortion, blur, gain and sensor noise (all off by default).
 - Head on a neutral background, or inside a scenario (a room model such as `scenarios/greybox/`, see below), optionally with a full rendered body. Fixed lighting: the head is unlit, the scenario shaded by one fixed light.
 - Output per capture: images, camera parameters (OpenCV convention), ground-truth mesh.
 
 Out of scope: running the reconstruction pipeline, and scoring results.
 
-Planned later: per-camera depth maps and vault masks; lens distortion, noise and blur; configurable lights; scenario textures.
+Planned later: per-camera depth maps and vault masks; configurable lights; scenario textures.
 
 ## Install
 
@@ -30,6 +30,8 @@ uv sync
 # Generate a rig from a preset
 heaicare-capture-sim preset ring --n 8 --radius-mm 300 --height-mm 100 -o rig.json
 heaicare-capture-sim preset dome --n 12 --radius-mm 300 --min-elevation-deg 20 -o rig.json
+# Presets also take every camera's resolution, lens and sensor
+#   --width --height --focal-length-mm --pixel-size-um --dist K1 K2 P1 P2 K3 --blur-px --gain --noise-std
 
 # Capture every camera in the rig
 heaicare-capture-sim capture --rig rig.json --out captures/run01 [--mesh baby_body] [--scenario greybox]
@@ -126,10 +128,10 @@ The head stays at the world origin, so rigs and ground truth are unchanged; the 
 - **Head:** a dropdown of `synthetic` and every `meshes/<head>/*.obj` (the folder is created on start if missing). Picking one swaps the head in the 3D view, preview and captures. **Reload** re-reads the head on screen from disk (so edits to its file show up) and rescans the folder for new files. Meshes there must already be in the world frame (convert other meshes with `import-mesh` first). A mesh that fails to load shows an error and the current head stays.
 - **Scenario:** a dropdown of `none` and every `scenarios/<name>/scenario.json`. Picking one draws the room in the 3D view and adds it to the preview and captures. **Reload scenario** re-reads it from disk (e.g. after editing `scenario.json` or re-exporting the model) and rescans the folder. The room stays still in the 3D view. **Baby offset (mm)** and **Baby yaw (°)** move the baby inside it, and the cameras move with the baby (the rig is relative to the head); the baby can also be dragged by the gizmo at its feet. **Save scenario** writes the baby pose into the `scenario.json`, so `capture --scenario` reproduces it. Room objects (poles, box) can't be moved individually.
 - **3D view:** the textured head with all its parts (eyes, eyebrows, eyelashes, tongue), plus one frustum per camera. The browser lights it for viewing only; captures and the preview use the Open3D renderer. The selected camera is highlighted; clicking a frustum selects it. The selected camera has a move gizmo: dragging it moves the camera's eye, the camera keeps looking at its target, and the fields and preview follow. A second gizmo at the centre of all eyes drags every camera together.
-- **Camera panel:** a camera dropdown, then fields for the selected camera (eye, target, up, focal length, pixel size, resolution), with Add, Duplicate and Remove.
+- **Camera panel:** a camera dropdown, then fields for the selected camera (eye, target, up, focal length, pixel size, resolution), with Add, Duplicate and Remove. The collapsed **Lens & sensor** folder holds distortion (`k1 k2 k3` and `p1 p2`), blur, gain and noise.
 - **Move all cameras:** **Shift (mm)** and **Turn (°)**, then **Apply move**, move every camera rigidly: a turn about the vertical through the mean of the targets (a ring spins around its centre), then a shift. Each click applies the move again.
-- **Presets:** ring and dome with the same layout parameters as the CLI; the generated cameras reuse the selected camera's resolution, lens and target. Applying a preset replaces the camera list.
-- **Preview:** an Open3D render of the selected camera (scaled down), refreshed after edits. It uses the same renderer as capture.
+- **Presets:** ring and dome with the same layout parameters as the CLI; the generated cameras reuse the selected camera's resolution, lens, sensor settings and target. Applying a preset replaces the camera list.
+- **Preview:** an Open3D render of the selected camera (scaled down), refreshed after edits. It uses the same renderer and the same lens and sensor effects as capture.
 - **Buttons:** Load rig, Save rig, and Capture. Capture writes `captures/<timestamp>/` and shows the path.
 
 ### HTTP API
@@ -160,7 +162,9 @@ Relative paths and names resolve against the folder `serve` was started in. The 
 import json, urllib.request
 
 body = json.dumps({"rig": json.load(open("rig.json")), "mesh": "baby_body"}).encode()
-req = urllib.request.Request("http://127.0.0.1:8000/capture", body, {"Content-Type": "application/json"})
+req = urllib.request.Request(
+    "http://127.0.0.1:8000/capture", body, {"Content-Type": "application/json"}
+)
 reply = json.load(urllib.request.urlopen(req))
 images = [f"{reply['out']}/{c['image']}" for c in reply["cameras"]["cameras"]]
 ```
@@ -193,6 +197,17 @@ A rig is always an explicit list of cameras; presets just generate this list.
 - The principal point is the image centre, `((width-1)/2, (height-1)/2)`.
 - Rejected: duplicate names, `eye_mm == target_mm`, and `up` parallel to the viewing direction.
 
+Optional per-camera fields, all off by default (rigs without them load unchanged):
+
+| Field | Meaning | Default |
+|---|---|---|
+| `dist` | Lens distortion `[k1, k2, p1, p2, k3]`, OpenCV model (radial k, tangential p) | `[0, 0, 0, 0, 0]` |
+| `blur_px` | Gaussian blur sigma, pixels (optics, e.g. slight defocus) | `0` |
+| `gain` | Pixel values are multiplied by this, then clipped to 0–255 (exposure) | `1` |
+| `noise_std` | Gaussian sensor noise sigma, grey levels (0–255) | `0` |
+
+They are applied in that order: the lens when rendering, then blur, gain and noise on the image. The noise is seeded by the camera name, so the same rig always gives the same images. A distortion so strong that it can't be inverted inside the image (the picture folds over itself) is rejected. Distortion renders a wider undistorted view first; a camera whose undistorted view would exceed 4096×3072 pixels is refused at capture.
+
 ## Output folder
 
 ```
@@ -219,13 +234,14 @@ A rig is always an explicit list of cameras; presets just generate this list.
       "width": 1920, "height": 1080,
       "K": [[fx, 0, cx], [0, fy, cy], [0, 0, 1]],
       "R": [[...], [...], [...]],
-      "t_mm": [tx, ty, tz]
+      "t_mm": [tx, ty, tz],
+      "dist": [k1, k2, p1, p2, k3]
     }
   ]
 }
 ```
 
-`scenario_source` is the `scenario.json` path, or `null` without a scenario. `scenario` is the scenario spec as used for this capture (all `scenario.json` fields, baby pose included, even if moved in the GUI and not saved), or `null`. `K`, `R` and `t_mm` use the OpenCV convention. `R` and `t_mm` map world to camera (`x_cam = R @ x_world + t`). The camera axes are x right, y down, z forward.
+`scenario_source` is the `scenario.json` path, or `null` without a scenario. `scenario` is the scenario spec as used for this capture (all `scenario.json` fields, baby pose included, even if moved in the GUI and not saved), or `null`. `K`, `R`, `t_mm` and `dist` use the OpenCV convention (`cv2.projectPoints(x_world, rvec(R), t_mm, K, dist)` gives the pixel; `cv2.undistort(image, K, dist)` removes the lens). `R` and `t_mm` map world to camera (`x_cam = R @ x_world + t`). The camera axes are x right, y down, z forward.
 
 ## Errors
 
@@ -237,5 +253,6 @@ A rig is always an explicit list of cameras; presets just generate this list.
 | Unreadable or invalid scenario (`scenario.json` field, missing model) | Exit code 2 with the reason; the GUI shows it and keeps the scenario on screen; the API replies 400. |
 | `serve`: port already in use | Exit code 2. |
 | `import-mesh`: bad option (e.g. `--up` parallel to `--front`), output not `.obj`, no head above the neck cut, `--keep-body` without a cut | Exit code 2 with the reason. |
+| Camera too big for the renderer (larger than 4096×3072, or distortion needing a larger undistorted view) | Exit code 2 with the size needed; the API replies 400; the GUI preview logs it. |
 | Capture fails partway | No partial folder is left. Output is written to a temporary folder next to the target and renamed only when complete. |
 | A camera sees none of the head | A warning (without a scenario); the image is still captured. That's a valid (bad) rig. |

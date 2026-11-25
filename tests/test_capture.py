@@ -5,7 +5,7 @@ import numpy as np
 import open3d as o3d
 import pytest
 
-from heaicare_capture_sim.capture import capture, new_capture_dir
+from heaicare_capture_sim.capture import apply_sensor, capture, new_capture_dir
 from heaicare_capture_sim.head import Head, make_synthetic_head
 from heaicare_capture_sim.rig import Camera, Rig, load_rig, ring
 
@@ -41,6 +41,7 @@ def test_output_layout_and_cameras_json(tmp_path):
     for entry, cam in zip(meta["cameras"], SMALL.cameras, strict=True):
         assert entry["image"] == f"images/{cam.name}.png"
         np.testing.assert_allclose(entry["K"], cam.K)
+        assert entry["dist"] == [0.0] * 5
         np.testing.assert_allclose(entry["R"], cam.R)
         np.testing.assert_allclose(entry["t_mm"], cam.t_mm)
 
@@ -115,3 +116,43 @@ def test_real_render_end_to_end(renderer, tmp_path):
     out = capture(rig, make_synthetic_head(), tmp_path / "run", renderer)
     img = np.asarray(o3d.io.read_image(str(out / "images" / "c0.png")))
     assert img.shape == (240, 320, 3) and img.std() > 5
+
+
+GREY = np.full((60, 80, 3), 128, np.uint8)
+
+
+def test_ideal_sensor_returns_image_unchanged():
+    assert apply_sensor(Camera(name="c", eye_mm=(0.0, -300.0, 0.0)), GREY) is GREY
+
+
+def test_gain_scales_and_clips():
+    c = Camera(name="c", eye_mm=(0.0, -300.0, 0.0), gain=1.5)
+    image = np.array([[[100, 200, 0]]], np.uint8)
+    assert apply_sensor(c, image).tolist() == [[[150, 255, 0]]]
+
+
+def test_noise_has_requested_std_and_is_seeded_by_name():
+    c = Camera(name="c", eye_mm=(0.0, -300.0, 0.0), noise_std=5.0)
+    a, b = apply_sensor(c, GREY), apply_sensor(c, GREY)
+    assert (a == b).all()
+    assert np.std(a.astype(float) - 128) == pytest.approx(5.0, rel=0.05)
+    other = apply_sensor(c.model_copy(update={"name": "d"}), GREY)
+    assert (other != a).any()
+
+
+def test_blur_spreads_a_bright_dot_evenly():
+    image = np.zeros((41, 41, 3), np.uint8)
+    image[20, 20] = 255
+    out = apply_sensor(Camera(name="c", eye_mm=(0.0, -300.0, 0.0), blur_px=2.0), image)
+    ring = [out[20, 23, 0], out[20, 17, 0], out[23, 20, 0], out[17, 20, 0]]
+    assert out[20, 20, 0] < 255 and ring[0] > 0 and len(set(ring)) == 1
+
+
+def test_capture_applies_sensor_and_exports_dist(tmp_path):
+    dist = (-0.1, 0.0, 0.0, 0.0, 0.0)
+    rig = ring(1, 300.0, 100.0, width=64, height=48, gain=0.5, dist=dist)
+    out = capture(rig, make_synthetic_head(), tmp_path / "run", FakeRenderer())
+    image = np.asarray(o3d.io.read_image(str(out / "images" / "cam00.png")))
+    assert image[0, 0].tolist() == [100, 50, 25]
+    meta = json.loads((out / "cameras.json").read_text())
+    assert meta["cameras"][0]["dist"] == list(dist)
